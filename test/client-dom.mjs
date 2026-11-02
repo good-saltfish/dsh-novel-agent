@@ -1,0 +1,364 @@
+/**
+ * 在 Node 里把 client.js 的组件真跑一遍（不需要浏览器）。
+ *
+ * 为什么必须这样测：右栏组件在浏览器里抛异常的表现是「一片空白」或「点按钮没反应」，
+ * 而宿主控制台没人看。表单里每个 input 的 onChange、每个分支的 props 都要真执行一次，
+ * 才能确认「面板里能手动建项目」这件事成立。
+ *
+ * 做法：伪造 window.__ModuleLoader__ + 一个极小的 React（useState/useEffect/useCallback），
+ * 把组件树渲染成普通对象，再手动触发 onClick / onChange，看状态变化后是否仍然正常。
+ *
+ * 关键：同一个元素对象必须反复 render（hook 状态挂在元素对象上），
+ * 每次都新建元素等于每次重置 state，测不到任何交互。
+ *
+ * 跑法：node D:\myproject\_scratch\client-dom-check.mjs
+ */
+import { pathToFileURL } from 'node:url';
+
+/* ------------------------------------------------------------------ */
+/* 极小 React                                                          */
+/* ------------------------------------------------------------------ */
+
+const hookStore = new Map(); // 元素 key -> hooks 数组
+let renderingKey = null;
+let hookIndex = 0;
+const pendingEffects = [];
+
+function createElement(type, props, ...children) {
+  return { type, props: props || {}, children: children.flat(Infinity).filter((c) => c != null && c !== false) };
+}
+
+const React = {
+  createElement,
+  useState(initial) {
+    const key = renderingKey;
+    const hooks = hookStore.get(key) || [];
+    const i = hookIndex++;
+    if (!(i in hooks)) hooks[i] = typeof initial === 'function' ? initial() : initial;
+    hookStore.set(key, hooks);
+    const value = hooks[i];
+    const setter = (next) => {
+      const arr = hookStore.get(key) || [];
+      arr[i] = typeof next === 'function' ? next(arr[i]) : next;
+      hookStore.set(key, arr);
+    };
+    return [value, setter];
+  },
+  useCallback(fn) { hookIndex++; return fn; },
+  useEffect(fn) { pendingEffects.push(fn); hookIndex++; },
+  useMemo(fn) { hookIndex++; return fn(); },
+  useRef(v) {
+    // 必须存进 hooks 数组：每次 render 新建一个对象等于每次重置，ref 就失去意义
+    // （本轮实测：touched.current 永远 false，用户手选会被后台刷新覆盖）。
+    const key = renderingKey;
+    const hooks = hookStore.get(key) || [];
+    const i = hookIndex++;
+    if (!(i in hooks)) hooks[i] = { current: v };
+    hookStore.set(key, hooks);
+    return hooks[i];
+  },
+};
+
+/* ------------------------------------------------------------------ */
+/* 渲染                                                                */
+/* ------------------------------------------------------------------ */
+
+let instanceSeq = 0;
+const instanceKeys = new Map();
+
+function keyOf(element) {
+  if (!instanceKeys.has(element)) instanceKeys.set(element, `c${instanceSeq++}`);
+  return instanceKeys.get(element);
+}
+
+function render(element) {
+  if (element == null || element === false || element === true) return null;
+  if (typeof element === 'string' || typeof element === 'number') return { text: String(element) };
+  if (Array.isArray(element)) return element.map(render).filter(Boolean);
+
+  const { type, props, children } = element;
+
+  if (typeof type === 'function') {
+    const key = keyOf(element);
+    const prevKey = renderingKey;
+    const prevIndex = hookIndex;
+    renderingKey = key;
+    hookIndex = 0;
+    let out;
+    try {
+      out = type({ ...props, children: children.length === 1 ? children[0] : children });
+    } finally {
+      renderingKey = prevKey;
+      hookIndex = prevIndex;
+    }
+    return render(out);
+  }
+
+  const renderedChildren = children.map(render).filter(Boolean);
+  const node = { tag: type, props: props || {}, children: renderedChildren };
+  // 文本必须在这里算好：用 getter 会让 `'text' in node` 恒为真，textOf 无限递归。
+  node.text = renderedChildren.map(textOf).join('');
+  return node;
+}
+
+function textOf(node) {
+  if (!node) return '';
+  if (typeof node.text === 'string') return node.text;
+  return (node.children || []).map(textOf).join('');
+}
+
+function walk(node, fn) {
+  if (!node) return;
+  fn(node);
+  for (const child of node.children || []) walk(child, fn);
+}
+
+function findAll(root, tag, needle) {
+  const out = [];
+  walk(root, (node) => {
+    if (node.tag === tag && (needle === undefined || textOf(node).includes(needle))) out.push(node);
+  });
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* 装载 client.js                                                      */
+/* ------------------------------------------------------------------ */
+
+let exportsObj = null;
+globalThis.window = {
+  __ModuleLoader__: {
+    load(spec) {
+      exportsObj = spec.factory((name) => {
+        if (name === 'react') return React;
+        throw new Error(`未预期的 require：${name}`);
+      });
+    },
+  },
+};
+// document 必须给一个最小实现：routeUrl() 要读 document.baseURI。
+// 缺了它，组件里每次数据加载都会走进「无法连接小说引擎」的错误分支——
+// 看起来「渲染成功」，实际测的全是错误态。这是本轮实测踩出来的。
+const styleNodes = [];
+globalThis.document = {
+  baseURI: 'http://localhost/',
+  head: { appendChild(node) { styleNodes.push(node); } },
+  querySelector() { return null; },
+  createElement(tag) { return { tag, dataset: {}, textContent: '' }; },
+};
+
+/* 假 fetch：让组件里的异步 load 真能走完，否则 ProjectList 永远停在「加载中…」，
+   空列表那条分支（正是用户第一次打开时的状态）就测不到。 */
+let fetchScript = [];
+globalThis.fetch = async (url, init) => {
+  const step = fetchScript.shift();
+  const body = step === undefined ? [] : step;
+  return {
+    ok: true,
+    status: 200,
+    async text() { return JSON.stringify(body); },
+  };
+};
+fetchScript = [];
+
+/** 等异步 setState 落定后重新渲染。 */
+async function settle(element) {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0));
+  return mount(element);
+}
+
+const h = React.createElement;
+
+const CLIENT = pathToFileURL('D:/myproject/dsh-novel-studio/lib/client.js').href;
+await import(CLIENT);
+if (!exportsObj || !exportsObj.__testing) throw new Error('client.js 没有导出 __testing');
+
+const T = exportsObj.__testing;
+
+/* ------------------------------------------------------------------ */
+/* 断言                                                                */
+/* ------------------------------------------------------------------ */
+
+const passed = [];
+const failed = [];
+function check(name, ok, detail) {
+  if (ok) passed.push(name);
+  else failed.push(`${name}${detail === undefined ? '' : ` -> ${JSON.stringify(detail)}`}`);
+}
+
+/** 渲染同一个元素并跑完 effect；effect 可能触发 fetch，这里只关心不抛异常。 */
+function mount(element) {
+  pendingEffects.length = 0;
+  const tree = render(element);
+  for (const fn of pendingEffects.splice(0)) {
+    try {
+      const cleanup = fn();
+      if (typeof cleanup === 'function') cleanup();
+    } catch (e) {
+      throw new Error(`effect 抛异常：${e.message}`);
+    }
+  }
+  return tree;
+}
+
+/* --- 1. CreateForm：折叠 → 展开 ------------------------------------------- */
+
+const formElement = h(T.CreateForm, { busy: false, onCreated() {} });
+let tree = mount(formElement);
+const newBtn = findAll(tree, 'button', '新建项目');
+check('折叠态有「＋ 新建项目」按钮', newBtn.length === 1, newBtn.length);
+check('折叠态没有输入框', findAll(tree, 'input').length === 0);
+
+newBtn[0].props.onClick();
+tree = mount(formElement);
+check('点开后出现「新建创作项目」标题', findAll(tree, 'div', '新建创作项目').length > 0);
+
+/* --- 2. 字段齐全 ----------------------------------------------------------- */
+
+const inputs = findAll(tree, 'input');
+check('表单有 4 个文本输入（书名/前提/题材/章数）', inputs.length === 4, inputs.length);
+const selects = findAll(tree, 'select');
+check('表单有 1 个骨架来源下拉', selects.length === 1, selects.length);
+check('下拉有离线/LLM 两项', (selects[0].children || []).length === 2,
+  (selects[0].children || []).map((c) => c.props && c.props.value));
+check('有「创建」按钮', findAll(tree, 'button', '创建').length === 1);
+check('有「取消」按钮', findAll(tree, 'button', '取消').length === 1);
+
+/* --- 3. onChange 真能改值 -------------------------------------------------- */
+
+const titleInput = inputs[0];
+check('书名输入框有 onChange', typeof titleInput.props.onChange === 'function');
+titleInput.props.onChange({ target: { value: '面板测试书' } });
+tree = mount(formElement);
+check('onChange 后书名写进受控值',
+  findAll(tree, 'input')[0].props.value === '面板测试书',
+  findAll(tree, 'input')[0].props.value);
+
+/* --- 4. 空书名被拦，不发请求 ----------------------------------------------- */
+
+titleInput.props.onChange({ target: { value: '   ' } });
+tree = mount(formElement);
+await findAll(tree, 'button', '创建')[0].props.onClick();
+tree = mount(formElement);
+check('空书名时显示错误提示', findAll(tree, 'div', '书名不能为空').length > 0, textOf(tree).slice(0, 200));
+
+/* --- 5. 非法章数被拦 ------------------------------------------------------- */
+
+titleInput.props.onChange({ target: { value: '面板测试书' } });
+const countInput = findAll(tree, 'input')[3];
+countInput.props.onChange({ target: { value: 'abc' } });
+tree = mount(formElement);
+await findAll(tree, 'button', '创建')[0].props.onClick();
+tree = mount(formElement);
+check('章数非整数时显示错误提示',
+  findAll(tree, 'div', '章数必须是').length > 0,
+  textOf(tree).slice(0, 300));
+
+/* --- 6. 取消能收起来 ------------------------------------------------------- */
+
+await findAll(tree, 'button', '取消')[0].props.onClick();
+tree = mount(formElement);
+check('点取消后回到折叠态',
+  findAll(tree, 'button', '新建项目').length === 1 && findAll(tree, 'input').length === 0);
+
+/* --- 7. 空项目列表仍给出新建入口 ------------------------------------------ */
+
+fetchScript = [[]]; // GET projects 返回空数组
+const listElement = h(T.ProjectList, { busy: false, refreshKey: 0, onPick() {}, onCreated() {} });
+let emptyList = mount(listElement);
+emptyList = await settle(listElement);
+check('空列表仍渲染新建表单', findAll(emptyList, 'button', '新建项目').length === 1);
+check('空列表提示指向新建按钮', textOf(emptyList).includes('点上面的'), textOf(emptyList).slice(0, 300));
+
+/* --- 8. StudioTab 能渲染 --------------------------------------------------- */
+
+const tabElement = h(T.StudioTab, { sessionId: 'test' });
+const tabTree = mount(tabElement);
+check('StudioTab 渲染出标题', textOf(tabTree).includes('小说工作台'));
+check('StudioTab 有刷新按钮', findAll(tabTree, 'button', '刷新').length >= 1);
+check('StudioTab 有新建入口', findAll(tabTree, 'button', '新建项目').length >= 1);
+check('StudioTab 顶栏一直显示模型（未选时也要可见）',
+  textOf(tabTree).includes('未选模型'), textOf(tabTree).slice(0, 200));
+
+/* --- 8b. 模型页 ----------------------------------------------------------- */
+
+// 这个 harness 每次 mount 都会重跑 effect（等于重新拉一次），所以同一份响应要给足次数。
+const modelPayload = {
+  ok: true,
+  providers: [{ id: 'deepseek', name: 'DeepSeek', models: [{ id: 'v4.1-flash', name: 'V4.1 Flash' }] }],
+  current: { provider: 'deepseek', model: 'v4.1-flash', source: 'default' },
+  saved: null,
+  bridge: 'http://127.0.0.1:1/v1',
+};
+fetchScript = Array.from({ length: 12 }, () => modelPayload);
+const modelElement = h(T.ModelScreen, { busy: false, onBack() {} });
+let modelTree = mount(modelElement);
+modelTree = await settle(modelElement);
+check('模型页渲染出当前模型', textOf(modelTree).includes('v4.1-flash'), textOf(modelTree).slice(0, 240));
+check('模型页说明来源是「跟随 DSH 默认」', textOf(modelTree).includes('跟随 DSH 默认'));
+// 没选供应商时没有模型可选，模型字段是禁用的手填框；选了才变下拉。
+check('模型页有供应商下拉', findAll(modelTree, 'select').length === 1,
+  findAll(modelTree, 'select').length);
+check('未选供应商时模型字段是禁用手填框',
+  findAll(modelTree, 'input').length === 1
+  && findAll(modelTree, 'input')[0].props.disabled === true);
+check('模型页有「用这个模型」与「恢复跟随」两个按钮',
+  findAll(modelTree, 'button', '用这个模型').length === 1
+  && findAll(modelTree, 'button', '恢复跟随').length === 1);
+check('未选供应商时「用这个模型」被禁用',
+  findAll(modelTree, 'button', '用这个模型')[0].props.disabled === true);
+
+/* 选供应商后模型下拉应带上该供应商的模型 */
+findAll(modelTree, 'select')[0].props.onChange({ target: { value: 'deepseek' } });
+modelTree = mount(modelElement);
+// 关键：onChange 之后还要等 effect 把数据拉回来，否则读到的是上一帧。
+modelTree = await settle(modelElement);
+const modelSelect = findAll(modelTree, 'select')[1];
+check('选供应商后模型下拉自动选中第一个模型',
+  modelSelect.props.value === 'v4.1-flash', modelSelect.props.value);
+check('选好之后「用这个模型」可点',
+  findAll(modelTree, 'button', '用这个模型')[0].props.disabled === false);
+check('模型页有返回按钮', findAll(modelTree, 'button', '返回项目列表').length === 1);
+
+/* 空供应商列表：不崩，且提示指向 DSH 设置 */
+fetchScript = Array.from({ length: 12 }, () => ({ ok: true, providers: [], current: null, saved: null, bridge: null }));
+const bareElement = h(T.ModelScreen, { busy: false, onBack() {} });
+let bareTree = mount(bareElement);
+bareTree = await settle(bareElement);
+check('没有供应商时不崩', textOf(bareTree).includes('单独指定'), textOf(bareTree).slice(0, 200));
+check('没有供应商时提示去 DSH 设置', textOf(bareTree).includes('DSH 设置'));
+check('没有模型时给出警告而不是假装可用', textOf(bareTree).includes('还没有可用模型'));
+
+/* --- 9. StudioEntry 无 sidebar 不抛 --------------------------------------- */
+
+const entryElement = h(T.StudioEntry, { sidebar: undefined });
+const entry = mount(entryElement);
+check('StudioEntry 无 sidebar 时能渲染', textOf(entry) === '小说');
+entry.props.onClick();
+check('StudioEntry 无 sidebar 时点击不抛异常', true);
+
+/* --- 10. 展示函数对 null 安全 --------------------------------------------- */
+
+check('partText(null) 不抛', T.partText('positioning', null) === '');
+check('outlineText(null) 不抛', T.outlineText(null) === '');
+check('recordChars(null) 返回 null', T.recordChars(null) === null);
+check('recordTime(null) 返回空串', T.recordTime(null) === '');
+check('chapterOrders(null) 返回空数组', Array.isArray(T.chapterOrders(null)) && T.chapterOrders(null).length === 0);
+check('outlineCount(null) 返回 0', T.outlineCount(null) === 0);
+check('stateOf(null) 返回 null', T.stateOf(null, 'positioning') === null);
+
+/* --- 11. ContextPackView 对空包安全 --------------------------------------- */
+
+const packElement = h(T.ContextPackView, { projectId: 'x', order: 1, onClose() {} });
+const packTree = mount(packElement);
+check('ContextPackView 首次渲染不抛（数据未到时显示加载中）',
+  textOf(packTree).includes('加载上下文包'), textOf(packTree).slice(0, 120));
+
+console.log(`\n通过 ${passed.length} 项：`);
+for (const name of passed) console.log(`  [ok] ${name}`);
+if (failed.length > 0) {
+  console.log(`\n失败 ${failed.length} 项：`);
+  for (const name of failed) console.log(`  [FAIL] ${name}`);
+}
+process.exit(failed.length === 0 ? 0 : 1);
