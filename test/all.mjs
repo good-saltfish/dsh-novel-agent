@@ -21,6 +21,7 @@ const SUITES = [
   ['ops-e2e', '面板可操作：新建/生成/连写/编辑/版本/回退/确认/台账/设置'],
   ['tools-e2e', '工具面：7 个 novel_* 工具的注册与真调用'],
   ['client-dom', '组件层：假 React + 假 fetch 下的交互与展示函数'],
+  ['fix-verify', '三处真机问题：返回入口、补骨架、部件编辑、连写、回退'],
 ];
 
 const results = [];

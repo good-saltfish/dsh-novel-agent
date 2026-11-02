@@ -462,6 +462,170 @@ check('连写有落库方式下拉', findAll(homeTree, 'select').length === 1);
 check('连写按钮带区间', findAll(homeTree, 'button', '连写第 4–13 章').length === 1);
 check('项目页显示细纲总数与游标', textOf(homeTree).includes('细纲 30 章') && textOf(homeTree).includes('第 3 章'));
 
+/* --- 17. 项目页必须有返回入口（否则进去就出不来） ------------------------- */
+
+check('项目页正常渲染时有返回项目列表按钮',
+  findAll(homeTree, 'button', '返回项目列表').length === 1,
+  textOf(homeTree).slice(0, 200));
+{
+  let called = 0;
+  fetchScript = Array.from({ length: 40 }, () => projectPayload);
+  const backElement = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack: () => { called += 1; }, onOpenChapter() {} });
+  // 必须先 mount 再 settle：effect 在 mount 里才跑，settle 末尾那次渲染才读得到新状态。
+  mount(backElement);
+  const backTree = await settle(backElement);
+  const backBtn = findAll(backTree, 'button', '返回项目列表')[0];
+  if (backBtn) backBtn.props.onClick();
+  check('返回按钮真的调用 onBack', called === 1, String(called));
+}
+
+/* --- 18. 骨架为空时给「生成骨架」入口，不留死路 --------------------------- */
+
+const emptySkeletonPayload = {
+  meta: { id: 'p2', title: '空骨架书' },
+  premise: '一句话前提',
+  cursor: 0,
+  confirmed_parts: {},
+  draft: { positioning: null, volume: null, protagonist: null, golden_finger: null, chapters: [] },
+  manuscripts: {},
+};
+fetchScript = Array.from({ length: 40 }, () => emptySkeletonPayload);
+const emptyElement = h(T.ProjectHome, { projectId: 'p2', busy: false, onBack() {}, onOpenChapter() {} });
+let emptyTree = mount(emptyElement);
+emptyTree = await settle(emptyElement);
+check('骨架为空时显示「还没有骨架」提示', textOf(emptyTree).includes('还没有骨架'));
+check('骨架为空时给出「生成骨架」按钮', findAll(emptyTree, 'button', '生成骨架').length === 1);
+check('骨架为空时有章数输入框', findAll(emptyTree, 'input').length >= 1);
+check('骨架为空时仍能返回项目列表', findAll(emptyTree, 'button', '返回项目列表').length === 1);
+
+/* 有骨架时不该再显示补骨架卡片（避免用户误点覆盖已有细纲） */
+check('有骨架时不显示「还没有骨架」', !textOf(homeTree).includes('还没有骨架'));
+
+/* --- 19. 422 业务失败要带出逐条原因，不能只显示 HTTP 码 ------------------- */
+
+{
+  // 模拟 accept-skeleton 返回 422 + rejected：request() 要把 payload 挂到 error 上。
+  // 按「方法 + 路径」分派，不要数调用次数——harness 每次 mount 都会重跑 effect，
+  // load() 会多次打 GET，按次数分派必然错位（本轮实测踩过）。
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const method = (init && init.method) || 'GET';
+    const path = String(url && url.pathname ? url.pathname : url);
+    if (method === 'POST' && path.includes('/generate')) {
+      return { ok: true, status: 200, async text() { return JSON.stringify({ meta: { id: 'p2' } }); } };
+    }
+    if (method === 'POST' && path.includes('/accept-skeleton')) {
+      return {
+        ok: false,
+        status: 422,
+        async text() {
+          return JSON.stringify({
+            accepted: ['positioning'],
+            rejected: [{ part: 'golden_finger', reason: '金手指没有限制与代价（会写成无敌流）' }],
+            confirmed_parts: { positioning: 'auto-accepted' },
+          });
+        },
+      };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify(emptySkeletonPayload); } };
+  };
+  const el = h(T.ProjectHome, { projectId: 'p2', busy: false, onBack() {}, onOpenChapter() {} });
+  mount(el);
+  const tree = await settle(el);
+  const genBtn = findAll(tree, 'button', '生成骨架')[0];
+  check('422 用例：找得到「生成骨架」按钮', !!genBtn);
+  if (genBtn) await genBtn.props.onClick();
+  const after = await settle(el);
+  check('422 时界面列出逐条原因而不是只报 HTTP 码',
+    textOf(after).includes('金手指没有限制与代价'),
+    textOf(after).slice(0, 400));
+  check('422 时说明有几个部件入库', textOf(after).includes('1 个部件入库'), textOf(after).slice(0, 300));
+  globalThis.fetch = originalFetch;
+}
+
+/* --- 20. 骨架部件可展开编辑并保存 ---------------------------------------- */
+
+check('partFieldValues 按部件模型字段摊开',
+  T.partFieldValues('golden_finger', { name: '视界', ability: '看见裂缝' })
+    .map((f) => f.key).join(',') === 'name,form,ability,cost_limitation,growth_path');
+check('partFieldValues 缺字段给空串而不是 undefined',
+  T.partFieldValues('protagonist', { name: '陆沉' }).every((f) => typeof f.text === 'string'));
+check('partFieldValues 列表字段用换行拼',
+  T.partFieldValues('positioning', { selling_points: ['甲', '乙'] })[3].text === '甲\n乙');
+check('partFromEdits 列表字段按行拆并丢空行',
+  JSON.stringify(T.partFromEdits('positioning', { genre: '都市', selling_points: '甲\n\n乙\n ' }).selling_points)
+    === '["甲","乙"]');
+check('partFromEdits 文本字段 trim',
+  T.partFromEdits('golden_finger', { ability: '  看见裂缝  ' }).ability === '看见裂缝');
+
+{
+  // 直接渲染 PartRow：本 harness 按元素对象身份给 hook 分键，而 ProjectHome 每次
+  // 渲染都会新建 PartRow 元素，子组件内部状态会被重置。测子组件就单独挂它。
+  fetchScript = Array.from({ length: 40 }, () => projectPayload);
+  const rowEl = h(T.PartRow, { project: projectPayload, part: 'golden_finger', busy: false, onSaved() {} });
+  mount(rowEl);
+  let rowTree = await settle(rowEl);
+  check('部件行折叠时显示名称摘要', textOf(rowTree).includes('视界'));
+  check('部件行折叠时显示状态', textOf(rowTree).includes('已自动验收'));
+  check('部件行折叠时没有输入框', findAll(rowTree, 'input').length === 0,
+    String(findAll(rowTree, 'input').length));
+
+  const kv = findAll(rowTree, 'div', '视界').find((node) => node.props && node.props.onClick);
+  check('部件行可点击展开', !!kv);
+  if (kv) {
+    kv.props.onClick();
+    rowTree = await settle(rowEl);
+    check('展开后出现 5 个字段输入框', findAll(rowTree, 'input').length === 5,
+      String(findAll(rowTree, 'input').length));
+    check('展开后有「保存并确认」按钮', findAll(rowTree, 'button', '保存并确认').length === 1);
+    check('展开后能看到「限制与代价」标签', textOf(rowTree).includes('限制与代价'));
+    // 输入框的值是 props.value，不是文本节点，textOf 看不到——要直接读 props。
+    check('展开后能力字段预填了当前值',
+      findAll(rowTree, 'input').map((node) => node.props.value).includes('看见裂缝'),
+      JSON.stringify(findAll(rowTree, 'input').map((node) => node.props.value)));
+    check('展开后字段值已预填（不是空框）',
+      findAll(rowTree, 'input').every((node) => typeof node.props.value === 'string'),
+      JSON.stringify(findAll(rowTree, 'input').map((n) => n.props.value)));
+  }
+}
+
+{
+  // 保存：PUT parts/golden_finger 应带上编辑后的值
+  const originalFetch = globalThis.fetch;
+  let putBody = null;
+  globalThis.fetch = async (url, init) => {
+    const method = (init && init.method) || 'GET';
+    const path = String(url && url.pathname ? url.pathname : url);
+    if (method === 'PUT' && path.includes('/parts/golden_finger')) {
+      putBody = JSON.parse(init.body);
+      return { ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } };
+  };
+  const rowEl = h(T.PartRow, { project: projectPayload, part: 'golden_finger', busy: false, onSaved() {} });
+  mount(rowEl);
+  let rowTree = await settle(rowEl);
+  const kv = findAll(rowTree, 'div', '视界').find((node) => node.props && node.props.onClick);
+  if (kv) {
+    kv.props.onClick();
+    rowTree = await settle(rowEl);
+    const inputs = findAll(rowTree, 'input');
+    // 第 3 个输入框对应 ability（name/form/ability/cost_limitation/growth_path）
+    const abilityInput = inputs[2];
+    if (abilityInput) {
+      abilityInput.props.onChange({ target: { value: '改过的能力描述' } });
+      rowTree = await settle(rowEl);
+      const saveBtn = findAll(rowTree, 'button', '保存并确认')[0];
+      if (saveBtn) await saveBtn.props.onClick();
+      check('保存发出 PUT 且带上编辑后的值',
+        !!putBody && putBody.content && putBody.content.ability === '改过的能力描述',
+        JSON.stringify(putBody));
+      check('保存后提示已标为人工确认', textOf(await settle(rowEl)).includes('已人工确认'));
+    }
+  }
+  globalThis.fetch = originalFetch;
+}
+
 console.log(`\n通过 ${passed.length} 项：`);
 for (const name of passed) console.log(`  [ok] ${name}`);
 if (failed.length > 0) {
