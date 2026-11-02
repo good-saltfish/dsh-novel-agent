@@ -178,6 +178,15 @@ const { server, origin } = await serve(getHandler());
   value && value.hasModel === false
     ? ok('宿主没有 llm 时 hasModel=false（不假装有模型）')
     : bad('宿主没有 llm 时 hasModel=false', JSON.stringify(value && value.hasModel));
+  // 旧宿主没有 llm 服务时，模型页必须还能打开（否则用户连「为什么没模型」都看不到）。
+  const models = await call(served.origin, 'GET', '_models');
+  const mv = models.body && models.body.value;
+  models.status === 200 && Array.isArray(mv && mv.providers)
+    ? ok('没有 llm 时 _models 仍返回 200 与空列表（模型页能打开）')
+    : bad('没有 llm 时 _models 仍返回 200 与空列表', `status=${models.status} ${JSON.stringify(models.body)}`);
+  mv && mv.current === null
+    ? ok('没有 llm 时 current=null（界面显示未选模型）')
+    : bad('没有 llm 时 current=null', JSON.stringify(mv && mv.current));
   served.server.close();
 }
 
