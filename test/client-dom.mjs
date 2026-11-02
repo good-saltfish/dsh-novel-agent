@@ -355,6 +355,113 @@ const packTree = mount(packElement);
 check('ContextPackView 首次渲染不抛（数据未到时显示加载中）',
   textOf(packTree).includes('加载上下文包'), textOf(packTree).slice(0, 120));
 
+/* --- 12. 章节页：生成/候选/确认/编辑/版本/台账 都要有入口 ------------------ */
+
+const chapterPayload = {
+  record: { order: 1, title: '裂口', status: 'auto-accepted', word_count: 2798, model_id: 'rule:fake-chapter', updated_at: '2026-11-01T23:19:11' },
+  content: '第 1 章正文。',
+};
+fetchScript = Array.from({ length: 30 }, () => chapterPayload);
+const chapterElement = h(T.ChapterView, { projectId: 'p1', order: 1, busy: false, onBack() {} });
+let chapterTree = mount(chapterElement);
+chapterTree = await settle(chapterElement);
+check('章节页显示状态与字数', textOf(chapterTree).includes('auto-accepted') && textOf(chapterTree).includes('2798 字'));
+check('章节页有「生成（过闸门）」按钮', findAll(chapterTree, 'button', '生成（过闸门）').length === 1);
+check('章节页有「只产候选」按钮', findAll(chapterTree, 'button', '只产候选').length === 1);
+check('章节页有「确认」按钮（未确认时）', findAll(chapterTree, 'button', '确认').length === 1);
+check('章节页有「编辑」「版本」「台账」三个入口',
+  findAll(chapterTree, 'button', '编辑').length === 1
+  && findAll(chapterTree, 'button', '版本').length === 1
+  && findAll(chapterTree, 'button', '台账').length === 1);
+check('章节页默认不是编辑态（无 textarea）', findAll(chapterTree, 'textarea').length === 0);
+
+/* 点「编辑」应出现 textarea 且预填正文 */
+findAll(chapterTree, 'button', '编辑')[0].props.onClick();
+chapterTree = mount(chapterElement);
+check('点编辑后出现正文编辑框', findAll(chapterTree, 'textarea').length === 1);
+check('编辑框预填当前正文', findAll(chapterTree, 'textarea')[0].props.value === '第 1 章正文。');
+
+/* 点「版本」应列出历史版本 */
+fetchScript = Array.from({ length: 30 }, () => ({ order: 1, versions: ['20261101-231911-000001'] }));
+await findAll(chapterTree, 'button', '版本')[0].props.onClick();
+chapterTree = await settle(chapterElement);
+check('版本面板列出历史版本', textOf(chapterTree).includes('20261101-231911-000001'));
+check('版本面板每项带回退按钮', findAll(chapterTree, 'button', '回退').length === 1);
+
+/* 点「台账」应列出本章运行记录 */
+fetchScript = Array.from({ length: 30 }, () => ({
+  runs: [{ run_id: 'run-x', chapters: [{ order: 1, status: 'committed', verdict: 'pass', attempts: 1, cjk_chars: 2798 }] }],
+}));
+await findAll(chapterTree, 'button', '台账')[0].props.onClick();
+chapterTree = await settle(chapterElement);
+check('台账列出本章运行记录', textOf(chapterTree).includes('run-x') && textOf(chapterTree).includes('committed'));
+
+/* --- 13. 指纹报告展示：字段名对齐 ndecon ---------------------------------- */
+
+const lintSample = {
+  version: 'fp-v1', cjk_chars: 2798, paragraph_count: 42, passed: false,
+  findings: [
+    { rule: 'dash', label: '破折号', value: 3, limit: 1, severity: 'warn', passed: false, detail: '第 2 段' },
+    { rule: 'cjk', label: '字数', value: 2798, limit: 2000, severity: 'info', passed: true, detail: '' },
+  ],
+};
+const lintOutput = T.lintText(lintSample);
+check('指纹报告先说是否通过', lintOutput.includes('有规则越界'));
+check('指纹报告逐条列 label 与实测/阈值', lintOutput.includes('破折号') && lintOutput.includes('3 / 阈值 1'));
+check('指纹报告标出越界项', lintOutput.includes('✗') && lintOutput.includes('✓'));
+check('指纹报告 null 不抛', T.lintText(null) === '（无结果）');
+
+/* --- 14. 台账展示只挑本章 ------------------------------------------------ */
+
+const runsSample = { runs: [
+  { run_id: 'run-a', chapters: [
+    { order: 1, status: 'committed', verdict: 'pass', attempts: 1, cjk_chars: 2700 },
+    { order: 2, status: 'rolled_back', verdict: 'repair', attempts: 3, cjk_chars: 2100 },
+  ] },
+] };
+const runsOut = T.runsText(runsSample, 2);
+check('台账只列指定章', runsOut.includes('第 2 章') && !runsOut.includes('第 1 章'));
+check('台账带上尝试次数与字数', runsOut.includes('尝试 3 次') && runsOut.includes('2100 字'));
+check('台账空时不抛', T.runsText(null, 1) === '本章还没有运行记录。');
+
+/* --- 15. 设置页：改工作区并显示项目数 ------------------------------------ */
+
+fetchScript = Array.from({ length: 30 }, () => ({
+  workspace: 'D:\\myproject\\.ndecon-workspace', workspaceOverride: null, projectCount: 7,
+}));
+const settingsElement = h(T.SettingsScreen, { busy: false, onBack() {}, onSaved() {} });
+let settingsTree = mount(settingsElement);
+settingsTree = await settle(settingsElement);
+check('设置页显示当前工作区', textOf(settingsTree).includes('.ndecon-workspace'));
+check('设置页显示项目数（换目录能立刻判断改对没有）', textOf(settingsTree).includes('7 本'));
+check('设置页有工作区输入框', findAll(settingsTree, 'input').length === 1);
+check('设置页有保存按钮', findAll(settingsTree, 'button', '保存并重启引擎').length === 1);
+
+/* --- 16. 项目页：连写区间与落库方式 -------------------------------------- */
+
+const projectPayload = {
+  meta: { id: 'p1', title: '连写书' },
+  premise: '一句话前提',
+  cursor: 3,
+  confirmed_parts: { positioning: 'auto-accepted', protagonist: 'auto-accepted', golden_finger: 'auto-accepted', chapters: 'auto-accepted' },
+  draft: {
+    positioning: '定位文本',
+    protagonist: { name: '陆沉' },
+    golden_finger: { name: '视界', ability: '看见裂缝', cost_limitation: '用一次失一段记忆' },
+    chapters: Array.from({ length: 30 }, (_, i) => ({ order: i + 1, title: `第${i + 1}章` })),
+  },
+  manuscripts: { ch1: { order: 1, status: 'auto-accepted', word_count: 2798, updated_at: '2026-11-01T23:19:11' } },
+};
+fetchScript = Array.from({ length: 30 }, () => projectPayload);
+const homeElement = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+let homeTree = mount(homeElement);
+homeTree = await settle(homeElement);
+check('项目页有连写卡片', textOf(homeTree).includes('连写'));
+check('连写默认区间从游标之后开始', textOf(homeTree).includes('本次将写第 4–13 章'), textOf(homeTree).slice(0, 400));
+check('连写有落库方式下拉', findAll(homeTree, 'select').length === 1);
+check('连写按钮带区间', findAll(homeTree, 'button', '连写第 4–13 章').length === 1);
+check('项目页显示细纲总数与游标', textOf(homeTree).includes('细纲 30 章') && textOf(homeTree).includes('第 3 章'));
+
 console.log(`\n通过 ${passed.length} 项：`);
 for (const name of passed) console.log(`  [ok] ${name}`);
 if (failed.length > 0) {
