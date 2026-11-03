@@ -10,6 +10,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+// 隔离 APPDATA：settings.json 里存着「用户单独选的模型」，不隔离的话
+// `resolveModelRoute` 会先读到它，测试断言「跟随 DSH 默认」就永远不成立。
+// 实测踩过：本机真存了 sensenova-6.8-flash-lite，导致两条断言假失败。
+const appData = path.join(os.tmpdir(), `ns-model-e2e-${Date.now()}`);
+await fs.mkdir(appData, { recursive: true });
+process.env.APPDATA = appData;
+
 const host = await import('../lib/host.js');
 const { panelFor, stopAllPanels } = host.__testing;
 

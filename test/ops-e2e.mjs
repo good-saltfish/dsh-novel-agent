@@ -232,6 +232,47 @@ if (engineUp) {
       : bad('_settings 报出项目数', JSON.stringify(value && value.projectCount));
   }
 
+  // 10. 引擎被杀掉后能自愈。
+  //
+  // 真实症状（用户报的）：面板显示「生成骨架：无法连接引擎
+  // （http://127.0.0.1:62238）：fetch failed」。那个端口号早已失效 —— 引擎是
+  // 长驻 python 子进程，会被宿主回收、被系统杀掉、或自己退出。以前插件只把
+  // 失效端口抛给用户，用户能做的只有重启宿主。
+  // 现在 proxyToPanel 会「清进程 → 重拉 → 重发同一次请求」。
+  {
+    const before = await call(origin, 'GET', '_status');
+    const wasRunning = !!(before.body && before.body.value && before.body.value.running);
+    wasRunning ? ok('自愈前引擎在跑') : bad('自愈前引擎在跑', JSON.stringify(before.body));
+
+    panel.stop();
+    await new Promise((r) => setTimeout(r, 600));
+
+    const afterKill = await call(origin, 'GET', '_status');
+    !(afterKill.body && afterKill.body.value && afterKill.body.value.running)
+      ? ok('杀掉后 _status 报 running=false')
+      : bad('杀掉后 _status 报 running=false', JSON.stringify(afterKill.body && afterKill.body.value));
+
+    // 关键断言：同一请求应该由插件自动重拉引擎后成功，而不是抛 502。
+    const revived = await call(origin, 'GET', 'projects');
+    revived.status === 200 && Array.isArray(revived.body)
+      ? ok('引擎被杀后，下一次请求自动重拉并成功')
+      : bad('引擎被杀后自动重拉', `status=${revived.status} ${JSON.stringify(revived.body)}`);
+
+    // POST 也要能重试。请求体在第一次尝试前已读进 Buffer，所以重发是原样重发；
+    // 这条单独验，因为「带 body 的重试」最容易写成「重发时 body 已被消费」。
+    panel.stop();
+    await new Promise((r) => setTimeout(r, 600));
+    const genAfterKill = await call(origin, 'POST', `projects/${projectId}/generate`, { provider: 'fake', chapter_count: 5 });
+    genAfterKill.status === 200 && genAfterKill.body && genAfterKill.body.meta
+      ? ok('引擎被杀后，带请求体的 POST 也能自动重拉并成功')
+      : bad('带 body 的 POST 重试', `status=${genAfterKill.status} ${JSON.stringify(genAfterKill.body)}`);
+
+    const afterRevive = await call(origin, 'GET', '_status');
+    afterRevive.body && afterRevive.body.value && afterRevive.body.value.running
+      ? ok('自愈后引擎在跑且端口已更新')
+      : bad('自愈后引擎在跑', JSON.stringify(afterRevive.body && afterRevive.body.value));
+  }
+
   panel.stop();
 }
 
