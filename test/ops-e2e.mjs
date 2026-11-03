@@ -220,7 +220,50 @@ if (engineUp) {
     }
   }
 
-  // 9. 工作区设置：报项目数，改目录后引擎重启
+  // 9. 删除项目：DELETE 必须真的把目录删掉，且幂等
+  //
+  // 面板新加了删除按钮（用户要求「每个项目需要添加删除按钮功能」）。这条走真引擎，
+  // 因为删除是 rmtree，写错了就是数据永久丢失 —— 不能只靠假 fetch 验组件。
+  {
+    const doomed = await call(origin, 'POST', 'projects/create', {
+      kind: 'creation', title: '待删书', premise: '删给我看',
+    });
+    const doomedId = doomed.body && doomed.body.meta && doomed.body.meta.id;
+    doomedId ? ok('建一本待删的书') : bad('建一本待删的书', JSON.stringify(doomed.body));
+
+    if (doomedId) {
+      // 注意：GET /api/projects 返回的是扁平 ProjectMeta（{id,kind,title,created_at}），
+      // 没有外层 meta 包裹——这和单个项目端点 /api/projects/{id} 不一样。
+      const idOf = (item) => (item && item.meta && item.meta.id) || (item && item.id);
+
+      const before = await call(origin, 'GET', 'projects');
+      const existed = Array.isArray(before.body) && before.body.some((item) => idOf(item) === doomedId);
+
+      const removed = await call(origin, 'DELETE', `projects/${doomedId}`);
+      removed.status === 200 && removed.body && removed.body.deleted === doomedId
+        ? ok('DELETE 返回被删的项目 id')
+        : bad('DELETE 返回被删的项目 id', `status=${removed.status} ${JSON.stringify(removed.body)}`);
+
+      const after = await call(origin, 'GET', 'projects');
+      const stillThere = Array.isArray(after.body) && after.body.some((item) => idOf(item) === doomedId);
+      existed && !stillThere
+        ? ok('删除后项目列表里不再有它')
+        : bad('删除后项目列表里不再有它', `existed=${existed} stillThere=${stillThere}`);
+
+      // 再删一次：store.delete 是幂等的，不该 500（界面重复点也不该炸）
+      const again = await call(origin, 'DELETE', `projects/${doomedId}`);
+      again.status === 200
+        ? ok('重复删除是幂等的（不报 500）')
+        : bad('重复删除是幂等的', `status=${again.status} ${JSON.stringify(again.body)}`);
+
+      // 目录必须真没了（正文、摘要、台账、版本历史一起）
+      const dir = path.join(workspace, 'projects', doomedId);
+      const gone = await fs.stat(dir).then(() => false).catch(() => true);
+      gone ? ok('项目目录连同正文摘要台账一起被删掉') : bad('项目目录被删掉', dir);
+    }
+  }
+
+  // 10. 工作区设置：报项目数，改目录后引擎重启
   {
     const settings = await call(origin, 'GET', '_settings');
     const value = settings.body && settings.body.value;
@@ -232,7 +275,7 @@ if (engineUp) {
       : bad('_settings 报出项目数', JSON.stringify(value && value.projectCount));
   }
 
-  // 10. 引擎被杀掉后能自愈。
+  // 11. 引擎被杀掉后能自愈。
   //
   // 真实症状（用户报的）：面板显示「生成骨架：无法连接引擎
   // （http://127.0.0.1:62238）：fetch failed」。那个端口号早已失效 —— 引擎是

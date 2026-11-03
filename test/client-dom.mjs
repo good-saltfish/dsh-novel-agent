@@ -626,6 +626,211 @@ check('partFromEdits 文本字段 trim',
   globalThis.fetch = originalFetch;
 }
 
+/* --- 20. 返回按钮：每一屏、每一种状态都要有 ------------------------------ */
+// 用户报的原话：「所有页面都要添加返回按钮 返回上一步面板」。
+// 以前只有正常渲染路径带返回，加载中/出错态什么都没有——点进一个加载失败的
+// 章节页就卡死，只能关掉整个右栏标签。所以这里逐个状态都要断言。
+
+{
+  // BackBar 本体
+  let back = 0;
+  const bar = mount(h(T.BackBar, { label: '← 返回章节', onBack: () => { back += 1; } }));
+  check('BackBar 渲染出给定文案', textOf(bar).includes('返回章节'), textOf(bar));
+  const barBtn = findAll(bar, 'button', '返回章节')[0];
+  check('BackBar 有可点按钮', !!barBtn);
+  if (barBtn) barBtn.props.onClick();
+  check('BackBar 点击真的调用 onBack', back === 1, String(back));
+
+  // ProjectHome：加载中态（数据还没到）
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } });
+  const loadingEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+  const loadingTree = mount(loadingEl); // 只 mount 不 settle = 数据未到的第一帧
+  check('项目页加载中态也有返回按钮',
+    findAll(loadingTree, 'button', '返回项目列表').length === 1,
+    textOf(loadingTree).slice(0, 200));
+
+  // ProjectHome：出错态
+  globalThis.fetch = async () => { throw new Error('引擎挂了'); };
+  const errEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+  mount(errEl);
+  const errTree = await settle(errEl);
+  check('项目页出错态也有返回按钮',
+    findAll(errTree, 'button', '返回项目列表').length === 1,
+    textOf(errTree).slice(0, 200));
+  check('项目页出错态把原因显示出来', textOf(errTree).includes('引擎挂了'), textOf(errTree).slice(0, 200));
+
+  // ChapterView：加载中态与出错态
+  globalThis.fetch = async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ record: null, content: null }); } });
+  const chLoadingEl = h(T.ChapterView, { projectId: 'p1', order: 1, busy: false, onBack() {} });
+  const chLoadingTree = mount(chLoadingEl);
+  check('章节页加载中态也有返回按钮',
+    findAll(chLoadingTree, 'button', '返回项目').length === 1,
+    textOf(chLoadingTree).slice(0, 200));
+
+  globalThis.fetch = async () => { throw new Error('读不到正文'); };
+  const chErrEl = h(T.ChapterView, { projectId: 'p1', order: 1, busy: false, onBack() {} });
+  mount(chErrEl);
+  const chErrTree = await settle(chErrEl);
+  check('章节页出错态也有返回按钮',
+    findAll(chErrTree, 'button', '返回项目').length === 1,
+    textOf(chErrTree).slice(0, 200));
+
+  // ContextPackView：加载中态与出错态
+  globalThis.fetch = async () => ({ ok: true, status: 200, async text() { return JSON.stringify({}); } });
+  const packLoadingEl = h(T.ContextPackView, { projectId: 'p1', order: 1, onClose() {} });
+  const packLoadingTree = mount(packLoadingEl);
+  check('上下文包加载中态也有返回按钮',
+    findAll(packLoadingTree, 'button', '返回章节').length === 1,
+    textOf(packLoadingTree).slice(0, 200));
+
+  globalThis.fetch = async () => { throw new Error('上下文包 404'); };
+  const packErrEl = h(T.ContextPackView, { projectId: 'p1', order: 1, onClose() {} });
+  mount(packErrEl);
+  const packErrTree = await settle(packErrEl);
+  check('上下文包出错态也有返回按钮',
+    findAll(packErrTree, 'button', '返回章节').length === 1,
+    textOf(packErrTree).slice(0, 200));
+
+  // ModelScreen / SettingsScreen：出错态
+  globalThis.fetch = async () => { throw new Error('_models 挂了'); };
+  const modelErrEl = h(T.ModelScreen, { busy: false, onBack() {} });
+  mount(modelErrEl);
+  const modelErrTree = await settle(modelErrEl);
+  check('模型页出错态也有返回按钮',
+    findAll(modelErrTree, 'button', '返回项目列表').length === 1,
+    textOf(modelErrTree).slice(0, 200));
+
+  globalThis.fetch = async () => { throw new Error('_settings 挂了'); };
+  const setErrEl = h(T.SettingsScreen, { busy: false, onBack() {}, onSaved() {} });
+  mount(setErrEl);
+  const setErrTree = await settle(setErrEl);
+  check('设置页出错态也有返回按钮',
+    findAll(setErrTree, 'button', '返回项目列表').length === 1,
+    textOf(setErrTree).slice(0, 200));
+
+  // 项目页也要能删：进了项目发现是废稿，不该被迫先退回列表再找
+  globalThis.fetch = async () => ({ ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } });
+  const homeDelEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {}, onDeleted() {} });
+  mount(homeDelEl);
+  const homeDelTree = await settle(homeDelEl);
+  check('项目页有删除入口', findAll(homeDelTree, 'button', '删除这本书').length === 1,
+    textOf(homeDelTree).slice(-200));
+  check('项目页把删除放在「危险操作」区', textOf(homeDelTree).includes('危险操作'),
+    textOf(homeDelTree).slice(-300));
+  check('项目页删除同样写明不可撤销', textOf(homeDelTree).includes('没有回收站'));
+
+  globalThis.fetch = originalFetch;
+}
+
+/* --- 21. 删除项目：两次确认，真的发 DELETE -------------------------------- */
+
+{
+  const originalFetch = globalThis.fetch;
+  let deleted = [];
+  let calls = [];
+  globalThis.fetch = async (url, init) => {
+    const method = (init && init.method) || 'GET';
+    const path = String(url && url.pathname ? url.pathname : url);
+    calls.push(`${method} ${path}`);
+    if (method === 'DELETE') {
+      return { ok: true, status: 200, async text() { return JSON.stringify({ deleted: 'p1' }); } };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify({}); } };
+  };
+
+  const delEl = h(T.DeleteProjectButton, {
+    projectId: 'p1',
+    title: '连写书',
+    busy: false,
+    onDeleted: (id) => deleted.push(id),
+  });
+  let delTree = mount(delEl);
+  check('删除按钮初始文案是「删除这本书」',
+    findAll(delTree, 'button', '删除这本书').length === 1,
+    textOf(delTree));
+  check('删除按钮写明不可撤销',
+    textOf(delTree).includes('没有回收站'),
+    textOf(delTree).slice(0, 200));
+
+  // 第一次点：只进入待确认，绝不能发请求
+  const armBtn = findAll(delTree, 'button', '删除这本书')[0];
+  if (armBtn) armBtn.props.onClick();
+  delTree = await settle(delEl);
+  check('第一次点变成待确认文案',
+    findAll(delTree, 'button', '确定删除').length === 1,
+    textOf(delTree).slice(0, 200));
+  check('第一次点不发 DELETE 请求',
+    calls.filter((item) => item.startsWith('DELETE')).length === 0,
+    JSON.stringify(calls));
+
+  // 待确认态可以取消
+  const cancelBtn = findAll(delTree, 'button', '取消')[0];
+  check('待确认态给出取消按钮', !!cancelBtn);
+  if (cancelBtn) cancelBtn.props.onClick();
+  delTree = await settle(delEl);
+  check('取消后回到「删除这本书」',
+    findAll(delTree, 'button', '删除这本书').length === 1,
+    textOf(delTree).slice(0, 200));
+
+  // 两次点击才真删
+  const armAgain = findAll(delTree, 'button', '删除这本书')[0];
+  if (armAgain) armAgain.props.onClick();
+  delTree = await settle(delEl);
+  const fireBtn = findAll(delTree, 'button', '确定删除')[0];
+  if (fireBtn) await fireBtn.props.onClick();
+  delTree = await settle(delEl);
+  check('第二次点真的发出 DELETE 请求',
+    calls.some((item) => item.startsWith('DELETE') && item.includes('projects/p1')),
+    JSON.stringify(calls));
+  check('删除成功后回调收到项目 id',
+    deleted.length === 1 && deleted[0] === 'p1',
+    JSON.stringify(deleted));
+}
+
+{
+  // 项目列表里点删除不能顺带把用户带进那个项目
+  const originalFetch = globalThis.fetch;
+  let picked = [];
+  let deletedIds = [];
+  const listPayload = [
+    { meta: { id: 'p1', title: '连写书' }, kind: 'creation', chapter_count: 30, written: 1 },
+  ];
+  globalThis.fetch = async (url, init) => {
+    const method = (init && init.method) || 'GET';
+    if (method === 'DELETE') {
+      return { ok: true, status: 200, async text() { return JSON.stringify({ deleted: 'p1' }); } };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify(listPayload); } };
+  };
+  const listEl = h(T.ProjectList, {
+    busy: false,
+    refreshKey: 0,
+    onPick: (id) => picked.push(id),
+    onCreated() {},
+    onDeleted: (id) => deletedIds.push(id),
+  });
+  mount(listEl);
+  let listTree = await settle(listEl);
+  check('项目列表每行有删除按钮',
+    findAll(listTree, 'button', '删除这本书').length === 1,
+    textOf(listTree).slice(0, 300));
+
+  // 点删除按钮外层包装必须 stopPropagation，否则会先触发进入项目
+  const wrapper = findAll(listTree, 'div').find(
+    (node) => node.props && typeof node.props.onClick === 'function'
+      && JSON.stringify(node.props.onClick.toString()).includes('stopPropagation'),
+  );
+  check('删除按钮外层有 stopPropagation 包装', !!wrapper);
+  if (wrapper) {
+    let stopped = false;
+    wrapper.props.onClick({ stopPropagation() { stopped = true; } });
+    check('点删除时阻止了冒泡（不会顺带进入项目）', stopped === true);
+    check('点删除时没有触发 onPick', picked.length === 0, JSON.stringify(picked));
+  }
+  globalThis.fetch = originalFetch;
+}
+
 console.log(`\n通过 ${passed.length} 项：`);
 for (const name of passed) console.log(`  [ok] ${name}`);
 if (failed.length > 0) {
