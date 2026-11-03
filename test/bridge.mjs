@@ -168,6 +168,54 @@ const origin = await bridge.start();
   failure === 'auth: 无效 key' ? ok('从 finish 块抠出失败原因') : bad('从 finish 块抠出失败原因', failure);
 }
 
+// 8b. max_tokens 太小时不透传：引擎连通性测试发 1，推理型模型会把这点预算全花在
+//     推理上然后交回空正文，表现为「模型没配好」。抬到 64 也不够，所以要整条丢掉。
+{
+  let seen = null;
+  const llm = {
+    async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'low', name: '低' }] } }; },
+    async *stream(params) {
+      seen = params;
+      yield { type: 'text-delta', text: 'pong' };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    },
+  };
+  const b = createLlmBridge({ getLlm: () => llm, getRoute: async () => ({ provider: 'p', model: 'm' }), log: () => {} });
+  await b.start();
+  const res = await request(b.origin, b.token, '/v1/chat/completions', {
+    messages: [{ role: 'user', content: 'ping' }],
+    max_tokens: 1,
+  });
+  const okBody = res.status === 200 && res.body.choices[0].message.content === 'pong';
+  okBody ? ok('max_tokens=1 被忽略，正文能拿到') : bad('max_tokens=1 被忽略', `${res.status} ${JSON.stringify(res.body)}`);
+  (seen && !('maxTokens' in seen))
+    ? ok('太小的 max_tokens 不透传给宿主')
+    : bad('太小的 max_tokens 不透传给宿主', JSON.stringify(seen && seen.maxTokens));
+  b.stop();
+}
+{
+  // 正常值要原样透传，否则引擎按字数要求控制输出长度的能力就丢了
+  let seen = null;
+  const llm = {
+    async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'low', name: '低' }] } }; },
+    async *stream(params) {
+      seen = params;
+      yield { type: 'text-delta', text: 'pong' };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    },
+  };
+  const b = createLlmBridge({ getLlm: () => llm, getRoute: async () => ({ provider: 'p', model: 'm' }), log: () => {} });
+  await b.start();
+  await request(b.origin, b.token, '/v1/chat/completions', {
+    messages: [{ role: 'user', content: 'ping' }],
+    max_tokens: 4096,
+  });
+  (seen && seen.maxTokens === 4096)
+    ? ok('正常的 max_tokens 原样透传')
+    : bad('正常的 max_tokens 原样透传', JSON.stringify(seen && seen.maxTokens));
+  b.stop();
+}
+
 // 9. 只绑本机
 {
   const host = new URL(origin).hostname;
