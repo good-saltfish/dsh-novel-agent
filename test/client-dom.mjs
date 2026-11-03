@@ -424,6 +424,18 @@ check('台账只列指定章', runsOut.includes('第 2 章') && !runsOut.include
 check('台账带上尝试次数与字数', runsOut.includes('尝试 3 次') && runsOut.includes('2100 字'));
 check('台账空时不抛', T.runsText(null, 1) === '本章还没有运行记录。');
 
+/* --- 14b. 骨架失败的处置建议 ------------------------------------------- */
+
+check('缺部件时建议重试或换模型',
+  T.skeletonAdvice("骨架生成失败：创作骨架 JSON 不合法：缺少部件：protagonist（主角）").includes('换一个模型'));
+check('超时建议调小章数',
+  T.skeletonAdvice('骨架生成失败：模型响应超时（m，超过 60 秒）').includes('调小'));
+check('未选模型建议先去模型页',
+  T.skeletonAdvice('尚未选择模型供应商').includes('「模型」页'));
+check('认不出的错误不硬编建议（避免瞎指路）',
+  T.skeletonAdvice('HTTP 404') === '');
+check('空消息不抛', T.skeletonAdvice(null) === '');
+
 /* --- 15. 设置页：改工作区并显示项目数 ------------------------------------ */
 
 fetchScript = Array.from({ length: 30 }, () => ({
