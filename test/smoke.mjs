@@ -30,6 +30,20 @@ async function test(name, fn) {
 const workspace = path.join(os.tmpdir(), 'novel-studio-smoke-ws');
 await fs.mkdir(workspace, { recursive: true });
 
+// 把插件数据目录也隔离到临时区。
+//
+// 不隔离的话，跑一次测试就会往用户真实的 %APPDATA%\dsh-novel-studio 里
+// 写 settings.json 与 logs/last-exit.json —— 那些记录本来是排查真实故障用的
+// 现场证据，被测试污染后就没法用了（实测：真实 engine.log 里混进十几条
+// 测试产生的 SIGTERM 记录）。
+process.env.APPDATA = path.join(os.tmpdir(), 'novel-studio-smoke-appdata');
+await fs.mkdir(path.join(process.env.APPDATA, 'dsh-novel-studio'), { recursive: true });
+await fs.writeFile(
+  path.join(process.env.APPDATA, 'dsh-novel-studio', 'settings.json'),
+  JSON.stringify({ workspace }),
+  'utf8',
+);
+
 /** 最小的 ctx 替身：只实现 host.js 真正用到的那几项。 */
 function fakeCtx(registrations) {
   return {
@@ -89,7 +103,9 @@ await test('_settings GET 返回当前工作区', async () => {
   const { status, body } = await get('/novel-studio/api/_settings');
   assert.equal(status, 200);
   assert.equal(body.ok, true);
-  assert.match(body.value.workspace, /\.ndecon-workspace$/);
+  // 不写死「以 .ndecon-workspace 结尾」：测试把工作区隔离到临时目录，
+  // 断言应当对齐实际配置的那个目录，而不是某个特定目录名。
+  assert.equal(path.resolve(body.value.workspace), path.resolve(workspace));
 });
 
 await test('跨站请求被栅栏拒绝（403 + 结构化错误体）', async () => {

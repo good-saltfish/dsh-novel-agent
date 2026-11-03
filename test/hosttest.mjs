@@ -24,6 +24,12 @@ async function test(name, fn) {
   }
 }
 
+// 隔离插件数据目录：这个套件会起真实 panel 子进程，不隔离的话
+// engine.log / last-exit.json 会写进用户真实的 %APPDATA%\dsh-novel-studio，
+// 把排查真实故障用的现场证据冲掉。
+process.env.APPDATA = path.join(os.tmpdir(), 'novel-studio-hosttest-appdata');
+await fs.mkdir(path.join(process.env.APPDATA, 'dsh-novel-studio'), { recursive: true });
+
 const { resolvePython, resetPythonCache, runNdecon } = await import('../lib/python.js');
 
 await test('python 探测能拿到一个可跑的解释器', async () => {
