@@ -271,6 +271,21 @@ if (engineUp) {
     afterRevive.body && afterRevive.body.value && afterRevive.body.value.running
       ? ok('自愈后引擎在跑且端口已更新')
       : bad('自愈后引擎在跑', JSON.stringify(afterRevive.body && afterRevive.body.value));
+
+    // 外部杀掉（不是我们主动 stop）必须记成「非主动」，否则界面会把真崩溃
+    // 当成「你自己点了重启」，把问题藏起来。
+    const child = panel.child;
+    if (child) {
+      child.kill();
+      await new Promise((r) => setTimeout(r, 800));
+      const exitRecord = await call(origin, 'GET', '_status');
+      const exit = exitRecord.body && exitRecord.body.value && exitRecord.body.value.lastExit;
+      exit && exit.intentional === false
+        ? ok(`外部杀掉被记成非主动退出（code=${exit.code} signal=${exit.signal}）`)
+        : bad('外部杀掉记成非主动退出', JSON.stringify(exit));
+    } else {
+      bad('外部杀掉记成非主动退出', '拿不到子进程句柄');
+    }
   }
 
   panel.stop();

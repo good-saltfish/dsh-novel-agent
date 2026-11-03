@@ -62,7 +62,15 @@ const { port } = server.address();
 const base = `http://127.0.0.1:${port}`;
 
 async function get(tail, options = {}) {
-  const response = await fetch(`${base}${tail}`, options);
+  let response;
+  try {
+    response = await fetch(`${base}${tail}`, options);
+  } catch (error) {
+    // fetch 失败时把 cause 也带上：Node 只给一句「fetch failed」，
+    // 真因（ECONNRESET / socket hang up / 服务已关）藏在 cause 里。
+    const cause = error && error.cause ? `（${error.cause.code || error.cause.message}）` : '';
+    throw new Error(`请求 ${tail} 失败：${error.message}${cause}`);
+  }
   const text = await response.text();
   let body = null;
   try { body = JSON.parse(text); } catch { body = text; }
@@ -181,6 +189,30 @@ await test('assertSafeTail 对合法路径放行', async () => {
   assert.throws(() => assertSafeTail('a/../b'), /非法路径/);
   assert.throws(() => assertSafeTail('C:/windows'), /非法路径/);
   assert.throws(() => assertSafeTail('a b'), /非法字符/);
+});
+
+await test('_restart 真的把引擎重新拉起来（不是只停掉）', async () => {
+  // 用户点「重启引擎」后如果界面显示「引擎未启动」，他会以为重启失败。
+  // 所以这个端点必须 stop 完立刻重新拉起，并把新状态一起返回。
+  const response = await fetch(`${base}/novel-studio/api/_restart`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.value.restarted, true, `restarted=${body.value.restarted} error=${body.value.error}`);
+  assert.ok(body.value.status && body.value.status.running, '返回的状态里引擎应当在跑');
+  assert.ok(Number.isInteger(body.value.status.port), '应当报出新端口');
+});
+
+await test('_status 带上日志落点与上次退出现场字段', async () => {
+  const { body } = await get('/novel-studio/api/_status');
+  assert.equal(body.ok, true);
+  assert.ok(typeof body.value.logFile === 'string' && body.value.logFile.includes('logs'),
+    `logFile=${body.value.logFile}`);
+  assert.ok('lastExit' in body.value, '_status 必须报出 lastExit（哪怕是 null）');
 });
 
 server.close();
