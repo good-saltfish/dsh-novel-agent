@@ -22,6 +22,7 @@ const SUITES = [
   ['tools-e2e', '工具面：7 个 novel_* 工具的注册与真调用'],
   ['client-dom', '组件层：假 React + 假 fetch 下的交互与展示函数'],
   ['fix-verify', '三处真机问题：返回入口、补骨架、部件编辑、连写、回退'],
+  ['llm-sync', '模型自愈：引擎 token 过期后自动重下发（复现 401）'],
 ];
 
 const results = [];
