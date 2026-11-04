@@ -416,13 +416,19 @@ check('指纹报告 null 不抛', T.lintText(null) === '（无结果）');
 const runsSample = { runs: [
   { run_id: 'run-a', chapters: [
     { order: 1, status: 'committed', verdict: 'pass', attempts: 1, cjk_chars: 2700 },
-    { order: 2, status: 'rolled_back', verdict: 'repair', attempts: 3, cjk_chars: 2100 },
+    { order: 2, status: 'rolled_back', verdict: 'repair', attempts: 3, cjk_chars: 2100,
+      hard_failures: ['chapter_length'],
+      hard_failure_details: ['偏短：实测 1209 字，目标 2600 字，允许 2210-2989'],
+      error: '超过修复重试上限' },
   ] },
 ] };
 const runsOut = T.runsText(runsSample, 2);
 check('台账只列指定章', runsOut.includes('第 2 章') && !runsOut.includes('第 1 章'));
 check('台账带上尝试次数与字数', runsOut.includes('尝试 3 次') && runsOut.includes('2100 字'));
+check('台账带上硬门实测值（否则事后看不出差多少）', runsOut.includes('实测 1209 字'));
+check('台账带上失败原因', runsOut.includes('超过修复重试上限'));
 check('台账空时不抛', T.runsText(null, 1) === '本章还没有运行记录。');
+check('台账没有明细时不硬编', T.runsText({ runs: [{ run_id: 'r', chapters: [{ order: 1, status: 'committed' }] }] }, 1).includes('第 1 章'));
 
 /* --- 14b. 骨架失败的处置建议 ------------------------------------------- */
 
