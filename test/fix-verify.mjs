@@ -43,6 +43,24 @@ function check(name, ok, detail) {
   else failed.push(`${name}${detail === undefined ? '' : ` -> ${JSON.stringify(detail)}`}`);
 }
 
+/**
+ * 轮询一次连写任务直到它不再是 running。
+ *
+ * 连写已改成后台任务（POST 回 202 + run_id），同步断言会一直失败。
+ */
+async function waitBatch(projectId, runId, timeoutMs = 60000) {
+  if (!runId) return null;
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const poll = await call('GET', `projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}`);
+    last = poll.body;
+    if (!last || last.status !== 'running') return last;
+  }
+  throw new Error(`连写任务 ${runId} 在 ${timeoutMs}ms 内没结束：${JSON.stringify(last)}`);
+}
+
 async function call(method, tail, body) {
   const res = await fetch(`${origin}/novel-studio/api/${tail}`, {
     method,
@@ -71,6 +89,7 @@ try {
   check('拿到项目 id', typeof pid === 'string' && pid.length > 0, pid);
 
   /* --- 3. 空骨架：连写必须被明确拒绝，而不是写出一堆无根正文 --- */
+  // 空骨架时连写必须被拒（400），而且是在参数校验阶段就拒，不会起后台任务。
   const emptyRun = await call('POST', `projects/${encodeURIComponent(pid)}/runs`, { from: 1, to: 3, provider: 'fake' });
   check('空骨架时连写被拒且原因明确',
     emptyRun.status === 400 && JSON.stringify(emptyRun.body).includes('细纲'),
@@ -114,11 +133,15 @@ try {
 
   /* --- 7. 连写：这次应该真的能写 --- */
   const run = await call('POST', `projects/${encodeURIComponent(pid)}/runs`, { from: 1, to: 3, provider: 'fake' });
-  check('补骨架后连写 200', run.status === 200, `${run.status} ${run.raw.slice(0, 200)}`);
-  check('连写 3 章全部提交', run.body.written === 3 && run.body.failures === 0,
-    JSON.stringify({ written: run.body.written, failures: run.body.failures }));
-  check('每章都有 verdict', (run.body.chapters || []).every((ch) => typeof ch.verdict === 'string'),
-    JSON.stringify((run.body.chapters || []).map((ch) => ch.verdict)));
+  const runDone = run.status === 202 && run.body && run.body.run_id
+    ? await waitBatch(pid, run.body.run_id)
+    : null;
+  // 连写是后台任务：POST 回 202 + run_id，结果在 runDone 里。
+  check('补骨架后连写立刻返回 202', run.status === 202, `${run.status} ${run.raw.slice(0, 200)}`);
+  check('连写 3 章全部提交', !!runDone && runDone.written === 3 && runDone.failures === 0,
+    JSON.stringify(runDone && { written: runDone.written, failures: runDone.failures }));
+  check('每章都有 verdict', ((runDone && runDone.chapters) || []).every((ch) => typeof ch.verdict === 'string'),
+    JSON.stringify(((runDone && runDone.chapters) || []).map((ch) => ch.verdict)));
 
   /* --- 8. 版本端点存在且可用（用户说「没有回退按钮」，回退要靠它） --- */
   const versions = await call('GET', `projects/${encodeURIComponent(pid)}/chapters/1/versions`);

@@ -41,6 +41,29 @@ function serve(handler) {
   });
 }
 
+/**
+ * 起一次连写并断言它是 202。
+ *
+ * 连写是后台任务：POST 只回 run_id，不等跑完。用同步语义断言会一直失败。
+ */
+async function startBatch(origin, projectId, body) {
+  return call(origin, 'POST', `projects/${projectId}/runs`, body);
+}
+
+/** 轮询一次连写任务直到它不再是 running（返回最终状态体）。 */
+async function waitBatch(origin, projectId, runId, timeoutMs = 60000) {
+  if (!runId) return null;
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const poll = await call(origin, 'GET', `projects/${projectId}/runs/${runId}`);
+    last = poll.body;
+    if (!last || last.status !== 'running') return last;
+  }
+  throw new Error(`连写任务 ${runId} 在 ${timeoutMs}ms 内没结束：${JSON.stringify(last)}`);
+}
+
 async function call(origin, method, tail, body) {
   const response = await fetch(`${origin}/novel-studio/api/${tail}`, {
     method,
@@ -131,15 +154,23 @@ if (engineUp) {
 
     // 3. 连写：从游标之后续跑
     {
-      const batch = await call(origin, 'POST', `projects/${projectId}/runs`, { from: 2, to: 4, provider: 'fake' });
-      batch.status === 200 && batch.body.written === 3 && batch.body.failures === 0
-        ? ok('连写第 2–4 章全部提交')
-        : bad('连写第 2–4 章', `status=${batch.status} ${JSON.stringify(batch.body)}`);
+      // 连写已改成后台任务：POST 立刻回 202 + run_id，必须轮询才知道结果。
+      // 同步等它跑完会撞插件 300 秒硬超时（实测 10 章真模型 373 秒）。
+      const batch = await startBatch(origin, projectId, { from: 2, to: 4, provider: 'fake' });
+      batch.status === 202 && batch.body && batch.body.run_id
+        ? ok('连写请求立刻返回 202 与 run_id')
+        : bad('连写请求返回 202', `status=${batch.status} ${JSON.stringify(batch.body)}`);
 
-      const more = await call(origin, 'POST', `projects/${projectId}/runs`, { to: 6, provider: 'fake' });
-      more.status === 200 && more.body.from === 5 && more.body.written === 2
+      const batchDone = await waitBatch(origin, projectId, batch.body && batch.body.run_id);
+      batchDone && batchDone.status === 'finished' && batchDone.written === 3 && batchDone.failures === 0
+        ? ok('连写第 2–4 章全部提交')
+        : bad('连写第 2–4 章', JSON.stringify(batchDone));
+
+      const more = await startBatch(origin, projectId, { to: 6, provider: 'fake' });
+      const moreDone = await waitBatch(origin, projectId, more.body && more.body.run_id);
+      moreDone && moreDone.from === 5 && moreDone.written === 2
         ? ok('不传 from 时从游标续跑（第 5–6 章）')
-        : bad('从游标续跑', `status=${more.status} ${JSON.stringify(more.body)}`);
+        : bad('从游标续跑', `status=${more.status} ${JSON.stringify(moreDone)}`);
 
       const project = await call(origin, 'GET', `projects/${projectId}`);
       project.body && project.body.cursor === 6
