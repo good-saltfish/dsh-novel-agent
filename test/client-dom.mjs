@@ -462,7 +462,10 @@ check('字数没过时指出是写得太短',
 check('重复桥段时指出要改细纲',
   T.runAdvice([{ order: 2, hard_failures: ['cross_chapter_similarity'] }]).includes('细纲'));
 check('超时错误单独识别',
-  T.runAdvice([{ order: 1, hard_failures: [], error: '章节生成失败：模型响应超时（m，超过 60 秒）' }])
+  T.runAdvice([{ order: 1, hard_failures: [], error: '章节生成失败：模型响应超时（m，超过 900 秒）' }])
+    .includes('重启引擎'));
+check('超时建议不提 NOVEL_DECON_TIMEOUT（用户改不到那个环境变量）',
+  !T.runAdvice([{ order: 1, error: '章节生成失败：模型响应超时（m，超过 900 秒）' }])
     .includes('NOVEL_DECON_TIMEOUT'));
 check('未选模型时指向模型页',
   T.runAdvice([{ order: 1, error: '章节生成失败：尚未选择模型供应商' }]).includes('「模型」页'));
