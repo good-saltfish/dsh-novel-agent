@@ -436,6 +436,24 @@ check('认不出的错误不硬编建议（避免瞎指路）',
   T.skeletonAdvice('HTTP 404') === '');
 check('空消息不抛', T.skeletonAdvice(null) === '');
 
+/* --- 14c. 连写失败的处置建议 ------------------------------------------- */
+
+check('字数没过时指出是写得太短',
+  T.runAdvice([{ order: 1, hard_failures: ['chapter_length'], error: '超过修复重试上限' }])
+    .includes('写得太短'));
+check('重复桥段时指出要改细纲',
+  T.runAdvice([{ order: 2, hard_failures: ['cross_chapter_similarity'] }]).includes('细纲'));
+check('超时错误单独识别',
+  T.runAdvice([{ order: 1, hard_failures: [], error: '章节生成失败：模型响应超时（m，超过 60 秒）' }])
+    .includes('NOVEL_DECON_TIMEOUT'));
+check('未选模型时指向模型页',
+  T.runAdvice([{ order: 1, error: '章节生成失败：尚未选择模型供应商' }]).includes('「模型」页'));
+check('认不出的失败不硬编建议',
+  T.runAdvice([{ order: 1, status: 'failed', error: '' }]) === '');
+check('没有失败章时返回空串（不要把"全部成功"也说成有问题）',
+  T.runAdvice([]) === '');
+check('空参数不抛', T.runAdvice(null) === '');
+
 /* --- 15. 设置页：改工作区并显示项目数 ------------------------------------ */
 
 fetchScript = Array.from({ length: 30 }, () => ({
