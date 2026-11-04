@@ -138,8 +138,22 @@ try {
     : null;
   // 连写是后台任务：POST 回 202 + run_id，结果在 runDone 里。
   check('补骨架后连写立刻返回 202', run.status === 202, `${run.status} ${run.raw.slice(0, 200)}`);
+  // 失败时只报 written/failures 等于没说：repair 是闸门判定名，必须带出哪条规则没过。
+  const batchFailures = ((runDone && runDone.chapters) || []).filter((ch) => ch.status !== 'committed');
   check('连写 3 章全部提交', !!runDone && runDone.written === 3 && runDone.failures === 0,
-    JSON.stringify(runDone && { written: runDone.written, failures: runDone.failures }));
+    JSON.stringify(runDone && {
+      written: runDone.written,
+      failures: runDone.failures,
+      failed: batchFailures.map((ch) => ({
+        order: ch.order,
+        status: ch.status,
+        verdict: ch.verdict,
+        cjk: ch.cjk_chars,
+        rules: ch.hard_failures,
+        details: ch.hard_failure_details,
+        error: ch.error,
+      })),
+    }));
   check('每章都有 verdict', ((runDone && runDone.chapters) || []).every((ch) => typeof ch.verdict === 'string'),
     JSON.stringify(((runDone && runDone.chapters) || []).map((ch) => ch.verdict)));
 
