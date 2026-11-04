@@ -430,6 +430,18 @@ check('台账带上失败原因', runsOut.includes('超过修复重试上限'));
 check('台账空时不抛', T.runsText(null, 1) === '本章还没有运行记录。');
 check('台账没有明细时不硬编', T.runsText({ runs: [{ run_id: 'r', chapters: [{ order: 1, status: 'committed' }] }] }, 1).includes('第 1 章'));
 
+// 摘要来源要显示：机械兜底只保证不断档，模型读过的才有情节级信息。
+// 不显示的话，用户看到 10 章全 committed，不知道后面几章上下文其实很薄。
+const runsModel = T.runsText({ runs: [{ run_id: 'r1', chapters: [
+  { order: 1, status: 'committed', verdict: 'pass', summary_source: 'model' }] }] }, 1);
+check('台账显示摘要由模型读过', runsModel.includes('摘要由模型读过'), runsModel);
+const runsMech = T.runsText({ runs: [{ run_id: 'r1', chapters: [
+  { order: 1, status: 'committed', verdict: 'pass', summary_source: 'mechanical' }] }] }, 1);
+check('台账显示机械兜底摘要', runsMech.includes('机械兜底'), runsMech);
+check('没有摘要来源时不硬编文案',
+  !T.runsText({ runs: [{ run_id: 'r1', chapters: [
+    { order: 1, status: 'committed', verdict: 'pass' }] }] }, 1).includes('摘要'));
+
 /* --- 14b. 骨架失败的处置建议 ------------------------------------------- */
 
 check('缺部件时建议重试或换模型',
