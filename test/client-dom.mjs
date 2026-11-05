@@ -308,6 +308,16 @@ check('模型页有「用这个模型」与「恢复跟随」两个按钮',
   && findAll(modelTree, 'button', '恢复跟随').length === 1);
 check('未选供应商时「用这个模型」被禁用',
   findAll(modelTree, 'button', '用这个模型')[0].props.disabled === true);
+check('模型页有「测一下这个模型」按钮',
+  findAll(modelTree, 'button', '测一下这个模型').length === 1);
+check('未选供应商时「测一下这个模型」也被禁用',
+  findAll(modelTree, 'button', '测一下这个模型')[0].props.disabled === true);
+check('模型页有选型参考（不是推荐榜）',
+  textOf(modelTree).includes('选型参考'), textOf(modelTree).slice(0, 400));
+check('选型参考点名了实测过的坑（glm 字数服从度）',
+  textOf(modelTree).includes('1311'), textOf(modelTree).slice(0, 600));
+check('选型参考说明「测一下」测不出字数服从度',
+  textOf(modelTree).includes('测不出字数服从度'));
 
 /* 选供应商后模型下拉应带上该供应商的模型 */
 findAll(modelTree, 'select')[0].props.onChange({ target: { value: 'deepseek' } });

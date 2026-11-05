@@ -133,6 +133,38 @@ const { server, origin } = await serve(getHandler());
     : bad('清空后回到「跟随 DSH 默认」', `status=${status} ${JSON.stringify(body)}`);
 }
 
+// 3b. 探测指定模型：不保存、不改引擎配置。
+//
+// 为什么单独测：用户真正要问的是「我下拉框里挑的这个行不行」，而引擎的
+// `/api/llm/test` 只测「已经配好的那个」。没有这条，试错就得先保存再测，
+// 测一次改一次配置。这里要同时验三件事：能通、不落盘、失败原因原样带出。
+{
+  const { status, body } = await call(origin, 'POST', '_models/probe', { provider: 'deepseek', model: 'deepseek-v4.1-flash' });
+  const value = body && body.value;
+  status === 200 && value && value.ok === true
+    ? ok('_models/probe 探测指定模型能通')
+    : bad('_models/probe 探测指定模型能通', `status=${status} ${JSON.stringify(body)}`);
+  value && typeof value.ms === 'number' && value.ms >= 0
+    ? ok('_models/probe 带回耗时')
+    : bad('_models/probe 带回耗时', JSON.stringify(value && value.ms));
+  value && value.provider === 'deepseek' && value.model === 'deepseek-v4.1-flash'
+    ? ok('_models/probe 回显测的是哪个模型')
+    : bad('_models/probe 回显测的是哪个模型', JSON.stringify(value));
+}
+{
+  // 探测必须不落盘：否则「试一下」会静默改掉用户正在用的模型。
+  const before = (await call(origin, 'GET', '_models')).body.value.current;
+  await call(origin, 'POST', '_models/probe', { provider: 'other', model: 'another' });
+  const after = (await call(origin, 'GET', '_models')).body.value.current;
+  JSON.stringify(before) === JSON.stringify(after)
+    ? ok('探测不改当前模型（试一下没有副作用）')
+    : bad('探测不改当前模型', `${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+}
+{
+  const { status } = await call(origin, 'POST', '_models/probe', { provider: 'deepseek' });
+  status === 400 ? ok('探测缺 model 被拒 400') : bad('探测缺 model 被拒 400', `status=${status}`);
+}
+
 // 4. 真链路：起引擎 → 引擎拿到的 LLM 设置应指向桥 → 让引擎测连通性
 {
   const panel = panelFor(workspace);
@@ -194,6 +226,26 @@ const { server, origin } = await serve(getHandler());
   mv && mv.current === null
     ? ok('没有 llm 时 current=null（界面显示未选模型）')
     : bad('没有 llm 时 current=null', JSON.stringify(mv && mv.current));
+  served.server.close();
+}
+
+// 6. 探测失败也必须回 200 + ok:false，并带出宿主给的原始原因。
+//
+// 用 5xx 表达的话前端 request() 会把它抛成异常，那段原始失败原因
+// （401/额度/超时）就丢了，用户看到的只剩「请求失败」。
+// 这里单独开一个新的 ctx，因为上面那个已经起过引擎、改过全局 hostCtx。
+{
+  const failing = fakeCtx();
+  failing.ctx.llm.stream = async function* stream() {
+    yield { type: 'finish', reason: { kind: 'error', failure: { code: 'AUTH', message: 'api key 无效' } } };
+  };
+  host.apply(failing.ctx);
+  const served = await serve(failing.getHandler());
+  const { status, body } = await call(served.origin, 'POST', '_models/probe', { provider: 'deepseek', model: 'x' });
+  const value = body && body.value;
+  status === 200 && value && value.ok === false && String(value.failure).includes('AUTH')
+    ? ok('探测失败仍回 200，并带出原始失败原因')
+    : bad('探测失败仍回 200 并带原因', `status=${status} ${JSON.stringify(body)}`);
   served.server.close();
 }
 

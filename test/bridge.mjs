@@ -168,8 +168,13 @@ const origin = await bridge.start();
   failure === 'auth: 无效 key' ? ok('从 finish 块抠出失败原因') : bad('从 finish 块抠出失败原因', failure);
 }
 
-// 8b. max_tokens 太小时不透传：引擎连通性测试发 1，推理型模型会把这点预算全花在
-//     推理上然后交回空正文，表现为「模型没配好」。抬到 64 也不够，所以要整条丢掉。
+// 8b. max_tokens 原样透传。
+//
+// 这里曾经有一条「低于 512 一律不透传」的规则，用来绕开引擎的连通性误判
+// （引擎发 max_tokens:1，推理模型把预算花在推理上、正文为空，被判「连接成功
+// 但返回空内容」）。那个误判的根因已经修在引擎侧（判据改看 finish_reason /
+// completion_tokens），所以桥这边必须把预算如实传下去——否则「引擎说要多少」
+// 与「宿主实际给多少」永远对不上，字数/截断类问题会再次变成玄学。
 {
   let seen = null;
   const llm = {
@@ -187,10 +192,10 @@ const origin = await bridge.start();
     max_tokens: 1,
   });
   const okBody = res.status === 200 && res.body.choices[0].message.content === 'pong';
-  okBody ? ok('max_tokens=1 被忽略，正文能拿到') : bad('max_tokens=1 被忽略', `${res.status} ${JSON.stringify(res.body)}`);
-  (seen && !('maxTokens' in seen))
-    ? ok('太小的 max_tokens 不透传给宿主')
-    : bad('太小的 max_tokens 不透传给宿主', JSON.stringify(seen && seen.maxTokens));
+  okBody ? ok('max_tokens=1 也能拿到正文') : bad('max_tokens=1 也能拿到正文', `${res.status} ${JSON.stringify(res.body)}`);
+  (seen && seen.maxTokens === 1)
+    ? ok('小预算原样透传给宿主')
+    : bad('小预算原样透传给宿主', JSON.stringify(seen && seen.maxTokens));
   b.stop();
 }
 {
@@ -214,6 +219,77 @@ const origin = await bridge.start();
     ? ok('正常的 max_tokens 原样透传')
     : bad('正常的 max_tokens 原样透传', JSON.stringify(seen && seen.maxTokens));
   b.stop();
+}
+
+// 8c. probeModel：模型页「测一下这个模型」用它的结果。
+//
+// 三条分支必须分开：有正文 = 通；没正文但 finish=length = 链路通（只是预算
+// 被推理吃了）；其它 = 不通并带原始原因。混成「失败」会让人去换一个本来
+// 没问题的模型——这是本轮实测（sensenova / aliyun 小预算全命中假失败）的教训。
+{
+  const { probeModel } = await import('../lib/bridge.js');
+  let seen = null;
+  const llm = {
+    async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'low', name: '低' }] } }; },
+    async *stream(params) {
+      seen = params;
+      yield { type: 'text-delta', text: '可用' };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    },
+  };
+  const result = await probeModel(llm, { provider: 'p', model: 'm' });
+  result.ok === true && result.sample === '可用'
+    ? ok('probe：有正文判通')
+    : bad('probe：有正文判通', JSON.stringify(result));
+  (seen && seen.maxTokens === 64)
+    ? ok('probe：预算给 64 而不是 1（推理模型会把 1 全吃掉）')
+    : bad('probe：预算给 64', JSON.stringify(seen && seen.maxTokens));
+  (seen && seen.reasoningEffort === 'low')
+    ? ok('probe：带最低推理档')
+    : bad('probe：带最低推理档', JSON.stringify(seen && seen.reasoningEffort));
+  (seen && seen.messages[0].content[0].text.includes('两个字'))
+    ? ok('probe：只问两个字，不拿它当能力测试')
+    : bad('probe：只问两个字', JSON.stringify(seen && seen.messages));
+}
+{
+  const { probeModel } = await import('../lib/bridge.js');
+  const llm = {
+    async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'low', name: '低' }] } }; },
+    async *stream() {
+      yield { type: 'finish', reason: { kind: 'length' } };
+    },
+  };
+  const result = await probeModel(llm, { provider: 'p', model: 'm' });
+  result.ok === true
+    ? ok('probe：finish=length 且无正文判「通」而不是失败')
+    : bad('probe：finish=length 判通', JSON.stringify(result));
+  (typeof result.note === 'string' && result.note.includes('推理'))
+    ? ok('probe：length 时说明预算被推理吃掉')
+    : bad('probe：length 时说明原因', JSON.stringify(result.note));
+}
+{
+  const { probeModel } = await import('../lib/bridge.js');
+  const llm = {
+    async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'low', name: '低' }] } }; },
+    async *stream() {
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'AUTH', message: 'api key 无效' } } };
+    },
+  };
+  const result = await probeModel(llm, { provider: 'p', model: 'm' });
+  result.ok === false && String(result.failure).includes('AUTH')
+    ? ok('probe：认证失败判不通并带原始原因')
+    : bad('probe：认证失败判不通', JSON.stringify(result));
+}
+{
+  const { probeModel } = await import('../lib/bridge.js');
+  const result = await probeModel(null, { provider: 'p', model: 'm' });
+  result.ok === false && result.code === 'no-llm'
+    ? ok('probe：没有 llm 服务如实报 no-llm')
+    : bad('probe：没有 llm 服务如实报 no-llm', JSON.stringify(result));
+  const noModel = await probeModel({ async *stream() {} }, {});
+  noModel.ok === false && noModel.code === 'no-model'
+    ? ok('probe：没选模型如实报 no-model')
+    : bad('probe：没选模型如实报 no-model', JSON.stringify(noModel));
 }
 
 // 9. 只绑本机
