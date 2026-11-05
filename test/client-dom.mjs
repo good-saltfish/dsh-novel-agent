@@ -892,6 +892,115 @@ check('partFromEdits 文本字段 trim',
   globalThis.fetch = originalFetch;
 }
 
+/* --- 21. 进度可见：重新进页面也要能看见在跑的任务并暂停 --------------------- */
+
+check('progressText 说出第几章、哪一步',
+  T.progressText({ current_order: 13, current_phase: 'writing', current_detail: '第 1 次生成（目标 2600 字）' })
+    .includes('第 13 章'),
+  T.progressText({ current_order: 13, current_phase: 'writing' }));
+check('progressText 把阶段翻成中文而不是显示英文标识符',
+  T.progressText({ current_order: 13, current_phase: 'writing' }).includes('生成正文'),
+  T.progressText({ current_order: 13, current_phase: 'writing' }));
+check('progressText 带上已耗时（用户要知道「等了多久」）',
+  T.progressText({
+    current_order: 13, current_phase: 'writing', current_since: new Date(Date.now() - 90000).toISOString(),
+  }).includes('已 1 分'),
+  T.progressText({ current_order: 13, current_phase: 'writing', current_since: new Date(Date.now() - 90000).toISOString() }));
+check('progressText 空任务返回空串（不显示半截文案）', T.progressText(null) === '');
+check('elapsedText 解析失败返回空串而不是 NaN',
+  T.elapsedText('not-a-date') === '', T.elapsedText('not-a-date'));
+check('elapsedText 秒级显示秒', T.elapsedText(new Date(Date.now() - 5000).toISOString()).includes('秒'));
+
+{
+  // 模拟「用户重新进入项目页，引擎那边的连写还在跑」：这正是用户报的
+  // 「显示这个项目已经有一次连写在跑，但是我看不到，想暂停都不行」。
+  const originalFetch = globalThis.fetch;
+  const liveJob = {
+    run_id: 'run-20261105-175818',
+    status: 'running',
+    from: 13,
+    to: 13,
+    total: 1,
+    written: 0,
+    failures: 0,
+    chapters: [],
+    current_order: 13,
+    current_phase: 'writing',
+    current_detail: '第 1 次生成（目标 2600 字）',
+    current_since: new Date(Date.now() - 60000).toISOString(),
+  };
+  globalThis.fetch = async (url) => {
+    const path = String(url && url.pathname ? url.pathname : url);
+    if (path.includes('/runs')) {
+      return {
+        ok: true,
+        status: 200,
+        async text() { return JSON.stringify({ runs: [{ run_id: liveJob.run_id, live: true, job: liveJob, chapters: [] }] }); },
+      };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } };
+  };
+  const liveEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+  mount(liveEl);
+  const liveTree = await settle(liveEl);
+  check('重新进页面也能发现正在跑的连写（不依赖发起时那次页面的 state）',
+    findAll(liveTree, 'button', '暂停').length === 1,
+    textOf(liveTree).slice(0, 400));
+  check('能看到具体进度：第几章 + 哪一步',
+    textOf(liveTree).includes('第 13 章') && textOf(liveTree).includes('生成正文'),
+    textOf(liveTree).slice(0, 600));
+  check('能看到已经等了多久',
+    textOf(liveTree).includes('已 '),
+    textOf(liveTree).slice(0, 600));
+  check('进度区显示已完成章数',
+    textOf(liveTree).includes('已完成 0 章'),
+    textOf(liveTree).slice(0, 600));
+  globalThis.fetch = originalFetch;
+}
+
+{
+  // 字数不在目标带内但已入库：必须显示成提示，不能显示成失败。
+  const originalFetch = globalThis.fetch;
+  const shortJob = {
+    run_id: 'run-short',
+    status: 'running',
+    from: 13,
+    to: 14,
+    total: 2,
+    written: 1,
+    failures: 0,
+    chapters: [{
+      order: 13,
+      status: 'committed',
+      verdict: 'pass',
+      cjk_chars: 1640,
+      advisories: ['字数不在目标带内（偏短：实测 1640 字，目标 2600 字，允许 2210-2989）'],
+    }],
+    current_order: 14,
+    current_phase: 'writing',
+    current_detail: '第 1 次生成',
+    current_since: new Date(Date.now() - 30000).toISOString(),
+  };
+  globalThis.fetch = async (url) => {
+    const path = String(url && url.pathname ? url.pathname : url);
+    if (path.includes('/runs')) {
+      return {
+        ok: true,
+        status: 200,
+        async text() { return JSON.stringify({ runs: [{ run_id: shortJob.run_id, live: true, job: shortJob, chapters: [] }] }); },
+      };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } };
+  };
+  const advEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+  mount(advEl);
+  const advTree = await settle(advEl);
+  check('字数提示显示成「已入库」而不是失败',
+    textOf(advTree).includes('已入库') && textOf(advTree).includes('字数不在目标带内'),
+    textOf(advTree).slice(0, 700));
+  globalThis.fetch = originalFetch;
+}
+
 console.log(`\n通过 ${passed.length} 项：`);
 for (const name of passed) console.log(`  [ok] ${name}`);
 if (failed.length > 0) {
