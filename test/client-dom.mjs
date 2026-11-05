@@ -519,7 +519,10 @@ let homeTree = mount(homeElement);
 homeTree = await settle(homeElement);
 check('项目页有连写卡片', textOf(homeTree).includes('连写'));
 check('连写默认区间从游标之后开始', textOf(homeTree).includes('本次将写第 4–13 章'), textOf(homeTree).slice(0, 400));
-check('连写有落库方式下拉', findAll(homeTree, 'select').length === 1);
+check('连写有落库方式与字数要求两个下拉', findAll(homeTree, 'select').length === 2, findAll(homeTree, 'select').length);
+check('字数要求默认是「写不够也入库」（不打回重写）',
+  textOf(homeTree).includes('写不够也入库'), textOf(homeTree).slice(0, 500));
+check('字数要求可切到严格模式', textOf(homeTree).includes('写不够就打回重写'));
 check('连写按钮带区间', findAll(homeTree, 'button', '连写第 4–13 章').length === 1);
 check('项目页显示细纲总数与游标', textOf(homeTree).includes('细纲 30 章') && textOf(homeTree).includes('第 3 章'));
 
