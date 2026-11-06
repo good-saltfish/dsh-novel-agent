@@ -281,6 +281,30 @@ check('StudioTab 有新建入口', findAll(tabTree, 'button', '新建项目').le
 check('StudioTab 顶栏一直显示模型（未选时也要可见）',
   textOf(tabTree).includes('未选模型'), textOf(tabTree).slice(0, 200));
 
+/* --- 8a. 引擎挂了也只说人话，不把日志绝对路径贴到界面上 --------------------- */
+
+// 用户的原话：「日志：C:\Users\...\logs\engine.log 这个不要出现在面板」。
+// 面板是看工作进度的地方，不是运维控制台。日志文件照旧写，只是不上界面。
+{
+  const downPayload = {
+    running: false, port: null, ndeconVersion: null, hasModel: false, model: null,
+    workspace: 'D:\\myproject\\.ndecon-workspace',
+    lastError: '引擎进程已退出',
+    logFile: 'C:\\Users\\someone\\AppData\\Roaming\\dsh-novel-studio\\logs\\engine.log',
+    lastExit: { code: 1, signal: null, intentional: false, stderr: 'Traceback (most recent call last)' },
+  };
+  fetchScript = Array.from({ length: 12 }, () => downPayload);
+  const downElement = h(T.StudioTab, { sessionId: 'test' });
+  // 必须先 mount 再 settle：effect 在 mount 里才跑，settle 末尾那次渲染才读得到
+  // status（否则测到的永远是「引擎状态未知」，断言等于没测）。
+  let downTree = mount(downElement);
+  downTree = await settle(downElement);
+  const downText = textOf(downTree);
+  check('引擎挂了不显示日志文件路径', !downText.includes('engine.log'), downText.slice(0, 300));
+  check('引擎挂了不显示 AppData 路径', !downText.includes('AppData'), downText.slice(0, 300));
+  check('引擎挂了仍说清上次退出码', downText.includes('上次退出'), downText.slice(0, 300));
+}
+
 /* --- 8b. 模型页 ----------------------------------------------------------- */
 
 // 这个 harness 每次 mount 都会重跑 effect（等于重新拉一次），所以同一份响应要给足次数。
