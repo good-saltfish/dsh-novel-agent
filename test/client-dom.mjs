@@ -430,6 +430,77 @@ await findAll(chapterTree, 'button', '台账')[0].props.onClick();
 chapterTree = await settle(chapterElement);
 check('台账列出本章运行记录', textOf(chapterTree).includes('run-x') && textOf(chapterTree).includes('committed'));
 
+/* --- 12b. 并行候选：生成多版、读者挑一版才落盘 ---------------------------- */
+
+// 上一段点了「编辑」还没退出；编辑态下正文走 textarea，正文区不渲染，
+// 会把下面「选中后正文换掉」那条断言测成假失败。先退出编辑态。
+const cancelEdit = findAll(chapterTree, 'button', '取消编辑');
+if (cancelEdit.length === 1) {
+  cancelEdit[0].props.onClick();
+  chapterTree = mount(chapterElement);
+}
+
+// 进章节页不该自己去拉候选：没生成过时那是一份空壳，白占一次请求。
+// 这条断言同时守住 fetchScript 的顺序契约——多打一次 fetch 会让后面的用例全部错位。
+check('章节页默认不拉候选（只在点击时才请求）', !textOf(chapterTree).includes('并行候选（'));
+
+// 点「并行候选」但这一章还没生成过：要给「还没生成」而不是空白，也不能报错。
+fetchScript = Array.from({ length: 30 }, () => ({
+  order: 1, title: '裂口', exists: false, selected_index: null, selected_at: '', candidates: [],
+}));
+await findAll(chapterTree, 'button', '并行候选')[0].props.onClick();
+chapterTree = await settle(chapterElement);
+check('没生成过时给出「还没生成」的提示', textOf(chapterTree).includes('这一章还没生成过并行候选'));
+check('没生成过时卡片明说还没有候选', textOf(chapterTree).includes('还没有候选。'));
+check('候选卡片带版本数选择（2-6）', findAll(chapterTree, 'select').some((n) => {
+  const values = (n.children || []).map((c) => c.props && c.props.value);
+  return values.join(',') === '2,3,4,5,6';
+}));
+
+// 点「再生成几版」：三版都要在卡片里，且每版都能看到判定、字数与预览。
+const candPayload = {
+  order: 1, title: '裂口', exists: true, target_chars: 2600,
+  requested: 3, ok_count: 3, passed_count: 2, elapsed_ms: 812,
+  selected_index: null, selected_at: '',
+  candidates: [
+    { index: 0, status: 'ok', model_id: 'rule:fake-chapter', preview: '第一版的场景。',
+      gate: { verdict: 'pass', passed: true, cjk_chars: 2680, hard_failures: [] } },
+    { index: 1, status: 'ok', model_id: 'rule:fake-chapter', preview: '第二版的场景。',
+      gate: { verdict: 'pass', passed: true, cjk_chars: 2711, hard_failures: [] } },
+    { index: 2, status: 'ok', model_id: 'rule:fake-chapter', preview: '第三版的场景。',
+      gate: { verdict: 'repair', passed: false, cjk_chars: 1980,
+        hard_failures: [{ rule: 'chapter_length', detail: '偏短' }] } },
+  ],
+};
+fetchScript = Array.from({ length: 30 }, () => candPayload);
+await findAll(chapterTree, 'button', '再生成几版')[0].props.onClick();
+chapterTree = await settle(chapterElement);
+check('候选卡片列出全部三版', findAll(chapterTree, 'button', '用这一版').length === 3);
+check('候选卡片显示各版字数与判定',
+  textOf(chapterTree).includes('pass · 2680 字') && textOf(chapterTree).includes('repair · 1980 字'));
+check('候选卡片显示预览（读者靠它挑）',
+  textOf(chapterTree).includes('第一版的场景。') && textOf(chapterTree).includes('第三版的场景。'));
+check('未过硬的候选标出硬门规则', textOf(chapterTree).includes('硬门未过：chapter_length'));
+check('生成本身不落盘：提示里说清正文还没写', textOf(chapterTree).includes('正文还没落盘'));
+check('候选卡片显示汇总（成功/过硬门版数）',
+  textOf(chapterTree).includes('成功 3/3 版') && textOf(chapterTree).includes('过硬门 2 版'));
+
+// 点「用这一版」：正文替换成所选那版，并把「已选中」标出来。
+const pickedPayload = {
+  record: { order: 1, title: '裂口', status: 'auto-accepted', word_count: 2711,
+    model_id: 'rule:fake-chapter', updated_at: '2026-11-01T23:29:11' },
+  content: '第二版正文。',
+  selection: { order: 1, selected_index: 1, verdict: 'pass', cjk_chars: 2711,
+    status: 'auto-accepted', summary_source: 'mechanical', hard_failures: [] },
+  candidates: { ...candPayload, selected_index: 1, selected_at: '2026-11-01T23:29:11' },
+};
+fetchScript = Array.from({ length: 30 }, () => pickedPayload);
+await findAll(chapterTree, 'button', '用这一版')[1].props.onClick();
+chapterTree = await settle(chapterElement);
+check('选中后正文换成所选那版', textOf(chapterTree).includes('第二版正文。'));
+check('选中后标出「已选中」', textOf(chapterTree).includes('已选中'));
+check('选中后说明提交结果', textOf(chapterTree).includes('已提交候选 #1'));
+
 /* --- 13. 指纹报告展示：字段名对齐 ndecon ---------------------------------- */
 
 const lintSample = {
