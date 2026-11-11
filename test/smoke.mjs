@@ -32,14 +32,14 @@ await fs.mkdir(workspace, { recursive: true });
 
 // 把插件数据目录也隔离到临时区。
 //
-// 不隔离的话，跑一次测试就会往用户真实的 %APPDATA%\dsh-novel-studio 里
+// 不隔离的话，跑一次测试就会往用户真实的 %APPDATA%\dsh-novel-agent 里
 // 写 settings.json 与 logs/last-exit.json —— 那些记录本来是排查真实故障用的
 // 现场证据，被测试污染后就没法用了（实测：真实 engine.log 里混进十几条
 // 测试产生的 SIGTERM 记录）。
 process.env.APPDATA = path.join(os.tmpdir(), 'novel-studio-smoke-appdata');
-await fs.mkdir(path.join(process.env.APPDATA, 'dsh-novel-studio'), { recursive: true });
+await fs.mkdir(path.join(process.env.APPDATA, 'dsh-novel-agent'), { recursive: true });
 await fs.writeFile(
-  path.join(process.env.APPDATA, 'dsh-novel-studio', 'settings.json'),
+  path.join(process.env.APPDATA, 'dsh-novel-agent', 'settings.json'),
   JSON.stringify({ workspace }),
   'utf8',
 );

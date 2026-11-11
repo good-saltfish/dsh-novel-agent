@@ -151,7 +151,7 @@ const origin = await bridge.start();
   Array.isArray(messages[0].content) && messages[0].content[0].type === 'text'
     ? ok('content 是 block 数组（裸字符串可能被当空消息）')
     : bad('content 是 block 数组', JSON.stringify(messages[0]));
-  messages[0].source?.kind === 'plugin:dsh-novel-studio'
+  messages[0].source?.kind === 'plugin:dsh-novel-agent'
     ? ok('user 消息带 source')
     : bad('user 消息带 source', JSON.stringify(messages[0].source));
 }

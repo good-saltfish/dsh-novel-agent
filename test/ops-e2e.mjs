@@ -80,13 +80,13 @@ const dataRoot = path.join(os.tmpdir(), 'novel-studio-ops-' + Date.now());
 const workspace = path.join(dataRoot, 'ws');
 await fs.mkdir(workspace, { recursive: true });
 
-// 隔离插件设置：宿主按 %APPDATA%\dsh-novel-studio\settings.json 解析工作区，
+// 隔离插件设置：宿主按 %APPDATA%\dsh-novel-agent\settings.json 解析工作区，
 // 不隔离的话本机已有的工作区会盖掉测试目录，测的就不是这里新建的书库了。
 // dataDir() 是调用时读环境变量，所以在 apply 之前改就生效。
 const appData = path.join(dataRoot, 'appdata');
-await fs.mkdir(path.join(appData, 'dsh-novel-studio'), { recursive: true });
+await fs.mkdir(path.join(appData, 'dsh-novel-agent'), { recursive: true });
 await fs.writeFile(
-  path.join(appData, 'dsh-novel-studio', 'settings.json'),
+  path.join(appData, 'dsh-novel-agent', 'settings.json'),
   JSON.stringify({ workspace }),
   'utf8',
 );

@@ -39,8 +39,8 @@ const dataRoot = path.join(os.tmpdir(), 'novel-studio-tools-' + Date.now());
 const workspace = path.join(dataRoot, 'ws');
 await fs.mkdir(workspace, { recursive: true });
 const appData = path.join(dataRoot, 'appdata');
-await fs.mkdir(path.join(appData, 'dsh-novel-studio'), { recursive: true });
-await fs.writeFile(path.join(appData, 'dsh-novel-studio', 'settings.json'), JSON.stringify({ workspace }), 'utf8');
+await fs.mkdir(path.join(appData, 'dsh-novel-agent'), { recursive: true });
+await fs.writeFile(path.join(appData, 'dsh-novel-agent', 'settings.json'), JSON.stringify({ workspace }), 'utf8');
 process.env.APPDATA = appData;
 
 const { ctx, registered } = fakeCtx();

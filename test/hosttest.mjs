@@ -25,10 +25,10 @@ async function test(name, fn) {
 }
 
 // 隔离插件数据目录：这个套件会起真实 panel 子进程，不隔离的话
-// engine.log / last-exit.json 会写进用户真实的 %APPDATA%\dsh-novel-studio，
+// engine.log / last-exit.json 会写进用户真实的 %APPDATA%\dsh-novel-agent，
 // 把排查真实故障用的现场证据冲掉。
 process.env.APPDATA = path.join(os.tmpdir(), 'novel-studio-hosttest-appdata');
-await fs.mkdir(path.join(process.env.APPDATA, 'dsh-novel-studio'), { recursive: true });
+await fs.mkdir(path.join(process.env.APPDATA, 'dsh-novel-agent'), { recursive: true });
 
 const { resolvePython, resetPythonCache, runNdecon } = await import('../lib/python.js');
 
@@ -140,6 +140,84 @@ await test('stdout 狂写的子进程不会被憋死（管道有人读）', asyn
   child.kill();
   assert.equal(finished, true, `子进程 8s 内没跑完（读到的 stdout 只有 ${seen} 字节），说明管道被憋住`);
   assert.ok(seen > 200000, `stdout 只读到 ${seen} 字节，管道可能被截断`);
+});
+
+/* -------------------------------------------------------------------------- */
+/* 改名迁移                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 插件从 dsh-novel-studio 改名成 dsh-novel-agent，数据目录也跟着改。
+ *
+ * 这几条测试存在的唯一原因：老用户的书稿路径存在旧目录的 settings.json 里，
+ * 搬迁写错不会报错，只会表现为「打开面板一本都没有」——比崩了还难查。
+ */
+await test('数据目录用新名，旧名只作迁移来源', async () => {
+  const { __testing } = await import('../lib/host.js');
+  assert.equal(path.basename(__testing.dataDir()), 'dsh-novel-agent');
+  assert.equal(path.basename(__testing.legacyDataDir()), 'dsh-novel-studio');
+});
+
+await test('旧版设置会被搬到新目录', async () => {
+  const original = process.env.APPDATA;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ns-migrate-'));
+  process.env.APPDATA = root;
+  try {
+    const { __testing } = await import('../lib/host.js');
+    await fs.mkdir(path.join(root, 'dsh-novel-studio'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'dsh-novel-studio', 'settings.json'),
+      JSON.stringify({ workspace: 'D:/books', model: { provider: 'x', model: 'y' } }),
+      'utf8',
+    );
+
+    const moved = await __testing.migrateLegacyData();
+    assert.equal(moved, true);
+    const pasted = JSON.parse(
+      await fs.readFile(path.join(root, 'dsh-novel-agent', 'settings.json'), 'utf8'),
+    );
+    assert.equal(pasted.workspace, 'D:/books');
+    assert.equal(pasted.model.model, 'y');
+    // 旧文件必须还在：用户回退到旧版本时设置不能凭空消失。
+    assert.ok(await fs.readFile(path.join(root, 'dsh-novel-studio', 'settings.json'), 'utf8'));
+  } finally {
+    process.env.APPDATA = original;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+await test('新目录已有设置时不被旧设置覆盖', async () => {
+  const original = process.env.APPDATA;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ns-migrate-'));
+  process.env.APPDATA = root;
+  try {
+    const { __testing } = await import('../lib/host.js');
+    await fs.mkdir(path.join(root, 'dsh-novel-studio'), { recursive: true });
+    await fs.mkdir(path.join(root, 'dsh-novel-agent'), { recursive: true });
+    await fs.writeFile(path.join(root, 'dsh-novel-studio', 'settings.json'), '{"workspace":"OLD"}', 'utf8');
+    await fs.writeFile(path.join(root, 'dsh-novel-agent', 'settings.json'), '{"workspace":"NEW"}', 'utf8');
+
+    const moved = await __testing.migrateLegacyData();
+    assert.equal(moved, false);
+    const kept = JSON.parse(await fs.readFile(path.join(root, 'dsh-novel-agent', 'settings.json'), 'utf8'));
+    assert.equal(kept.workspace, 'NEW');
+  } finally {
+    process.env.APPDATA = original;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+await test('没有旧目录时迁移安静返回 false，不抛错', async () => {
+  const original = process.env.APPDATA;
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ns-migrate-'));
+  process.env.APPDATA = root;
+  try {
+    const { __testing } = await import('../lib/host.js');
+    assert.equal(await __testing.migrateLegacyData(), false);
+  } finally {
+    process.env.APPDATA = original;
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 const failed = results.filter((item) => !item.ok);

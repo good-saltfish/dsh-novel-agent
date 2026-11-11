@@ -11,9 +11,8 @@
  * 关键：同一个元素对象必须反复 render（hook 状态挂在元素对象上），
  * 每次都新建元素等于每次重置 state，测不到任何交互。
  *
- * 跑法：node D:\myproject\_scratch\client-dom-check.mjs
+ * 跑法：node test/client-dom.mjs
  */
-import { pathToFileURL } from 'node:url';
 
 /* ------------------------------------------------------------------ */
 /* 极小 React                                                          */
@@ -170,7 +169,9 @@ async function settle(element) {
 
 const h = React.createElement;
 
-const CLIENT = pathToFileURL('D:/myproject/dsh-novel-studio/lib/client.js').href;
+// 用相对定位而不是写死盘符：仓库被 clone 到别的路径、或者目录改名，
+// 只改一处名字就会让整套组件测试指向一个不存在的文件。
+const CLIENT = new URL('../lib/client.js', import.meta.url).href;
 await import(CLIENT);
 if (!exportsObj || !exportsObj.__testing) throw new Error('client.js 没有导出 __testing');
 
@@ -290,7 +291,7 @@ check('StudioTab 顶栏一直显示模型（未选时也要可见）',
     running: false, port: null, ndeconVersion: null, hasModel: false, model: null,
     workspace: 'D:\\myproject\\.ndecon-workspace',
     lastError: '引擎进程已退出',
-    logFile: 'C:\\Users\\someone\\AppData\\Roaming\\dsh-novel-studio\\logs\\engine.log',
+    logFile: 'C:\\Users\\someone\\AppData\\Roaming\\dsh-novel-agent\\logs\\engine.log',
     lastExit: { code: 1, signal: null, intentional: false, stderr: 'Traceback (most recent call last)' },
   };
   fetchScript = Array.from({ length: 12 }, () => downPayload);
