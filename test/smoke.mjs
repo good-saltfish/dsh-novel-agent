@@ -91,6 +91,15 @@ async function get(tail, options = {}) {
   return { status: response.status, body };
 }
 
+/** PUT JSON 到插件自己的端点。 */
+async function put(tail, payload) {
+  return get(tail, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 await test('_status 在引擎未启动时也返回 200（设置页要能看见状态）', async () => {
   const { status, body } = await get('/novel-studio/api/_status');
   assert.equal(status, 200);
@@ -229,6 +238,49 @@ await test('_status 带上日志落点与上次退出现场字段', async () => 
   assert.ok(typeof body.value.logFile === 'string' && body.value.logFile.includes('logs'),
     `logFile=${body.value.logFile}`);
   assert.ok('lastExit' in body.value, '_status 必须报出 lastExit（哪怕是 null）');
+});
+
+await test('_status 不带解释器/引擎 origin 这类本机路径', async () => {
+  // 这些字段原来会原样回给浏览器，截图发出去就把本机用户名和目录结构发出去了。
+  // 前端对它们零引用（grep 过 client.js），所以直接不返回，而不是返回再抹。
+  const { body } = await get('/novel-studio/api/_status');
+  for (const key of ['python', 'pythonVersion', 'origin', 'llmBridge']) {
+    assert.ok(!(key in body.value), `_status 不该再回 ${key}`);
+  }
+  // 但 workspace 必须留着：设置页要显示并回填它。
+  assert.equal(typeof body.value.workspace, 'string');
+});
+
+await test('_status 报出引擎安装状态字段（哪怕还没走到那一步）', async () => {
+  // 前端靠它渲染「正在装写作引擎，第 N 步」。字段缺失时前端只会显示
+  // 「引擎未启动」，用户就不知道后台其实在装。
+  const { body } = await get('/novel-studio/api/_status');
+  assert.ok('engineInstall' in body.value, '_status 必须报出 engineInstall（哪怕是 null）');
+  const install = body.value.engineInstall;
+  if (install) {
+    assert.ok(['idle', 'installing', 'installed', 'failed'].includes(install.state),
+      `未知的安装状态：${install.state}`);
+  }
+});
+
+await test('_settings PUT 能存解释器路径，也能清掉它', async () => {
+  // 这个字段一直被 _boot 读取，却没有任何地方能写进去 —— 用户看到
+  // 「在设置里填解释器的绝对路径」，转头去设置页发现根本没这个输入框。
+  const saved = await put('/novel-studio/api/_settings', { python: 'C:\\Python311\\python.exe' });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const after = await get('/novel-studio/api/_settings');
+  assert.equal(after.body.value.python, 'C:\\Python311\\python.exe');
+
+  const cleared = await put('/novel-studio/api/_settings', { python: null });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  const final = await get('/novel-studio/api/_settings');
+  assert.ok(!final.body.value.python, `python 应当被清掉，实际 ${final.body.value.python}`);
+});
+
+await test('_settings PUT 拒绝非字符串的 python', async () => {
+  const { status, body } = await put('/novel-studio/api/_settings', { python: 42 });
+  assert.equal(status, 400);
+  assert.equal(body.ok, false);
 });
 
 server.close();
