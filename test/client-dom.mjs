@@ -289,7 +289,7 @@ check('StudioTab 顶栏一直显示模型（未选时也要可见）',
 {
   const downPayload = {
     running: false, port: null, ndeconVersion: null, hasModel: false, model: null,
-    workspace: 'D:\\myproject\\.ndecon-workspace',
+    workspace: 'D:\\novels',
     lastError: '引擎进程已退出',
     logFile: 'C:\\Users\\someone\\AppData\\Roaming\\dsh-novel-agent\\logs\\engine.log',
     lastExit: { code: 1, signal: null, intentional: false, stderr: 'Traceback (most recent call last)' },
@@ -584,19 +584,19 @@ check('空参数不抛', T.runAdvice(null) === '');
 /* --- 15. 设置页：改工作区并显示项目数 ------------------------------------ */
 
 fetchScript = Array.from({ length: 30 }, () => ({
-  workspace: 'D:\\myproject\\.ndecon-workspace', workspaceOverride: null, projectCount: 7,
+  workspace: 'D:\\novels', workspaceOverride: null, projectCount: 7,
 }));
 const settingsElement = h(T.SettingsScreen, { busy: false, onBack() {}, onSaved() {} });
 let settingsTree = mount(settingsElement);
 settingsTree = await settle(settingsElement);
-check('设置页显示当前工作区', textOf(settingsTree).includes('.ndecon-workspace'));
+check('设置页显示当前工作区', textOf(settingsTree).includes('novels'));
 check('设置页显示项目数（换目录能立刻判断改对没有）', textOf(settingsTree).includes('7 本'));
 check('设置页有工作区输入框', findAll(settingsTree, 'input').length === 2);
 // 两个输入框：工作区 + Python 解释器。断言总数太脆（加一个字段就得改数字），
 // 所以按值/占位符点名，确认它们各自在，且不是同一个框被渲染两次。
 const settingsInputs = findAll(settingsTree, 'input');
 check('工作区输入框带当前路径',
-  settingsInputs.some((node) => String(node.props && node.props.value).includes('.ndecon-workspace')));
+  settingsInputs.some((node) => String(node.props && node.props.value).includes('novels')));
 check('带 Python 解释器输入框（缺引擎时提示「在设置里填绝对路径」，必须真有这个框）',
   settingsInputs.some((node) => String(node.props && node.props.placeholder || '').includes('python.exe')));
 check('设置页有保存按钮', findAll(settingsTree, 'button', '保存并重启引擎').length === 1);
