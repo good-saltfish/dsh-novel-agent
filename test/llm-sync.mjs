@@ -47,8 +47,20 @@ const panel = new PanelProcess(workspace);
 const origin = await panel.ensureStarted();
 check('引擎起来', typeof origin === 'string', origin);
 
+// 引擎自带 panel 访问令牌：从插件启动时一定带着，直连引擎的请求必须自己补上。
+const tokenHeader = { 'x-ndecon-token': panel.panelToken };
+const engineGet = async (tail) => (await fetch(`${origin}${tail}`, { headers: tokenHeader })).json();
+const enginePost = async (tail, body) =>
+  (
+    await fetch(`${origin}${tail}`, {
+      method: 'POST',
+      headers: { ...tokenHeader, 'content-type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    })
+  ).json();
+
 // 1) 正常下发后引擎配置应与桥一致
-let settings = await (await fetch(`${origin}/api/llm/settings`)).json();
+let settings = await engineGet('/api/llm/settings');
 check('引擎配置指向桥', settings.base_url.includes('/v1'), settings.base_url);
 check('引擎配置是 custom', settings.provider === 'custom', settings.provider);
 check('引擎配置有 key', settings.has_key === true);
@@ -56,7 +68,7 @@ check('引擎配置有 key', settings.has_key === true);
 // 2) 模拟「引擎重启后 token 丢了」：把引擎的 key 改成一个必然错误的串
 await fetch(`${origin}/api/llm/settings`, {
   method: 'PUT',
-  headers: { 'content-type': 'application/json' },
+  headers: { ...tokenHeader, 'content-type': 'application/json' },
   body: JSON.stringify({
     provider: 'custom',
     base_url: settings.base_url,
@@ -64,22 +76,14 @@ await fetch(`${origin}/api/llm/settings`, {
     model: settings.model,
   }),
 });
-const broken = await (await fetch(`${origin}/api/llm/test`, {
-  method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: '{}',
-})).json();
+const broken = await enginePost('/api/llm/test', {});
 check('旧 token 确实会被桥拒绝（复现用户的 401）', broken.ok === false && String(broken.detail).includes('401'), JSON.stringify(broken).slice(0, 160));
 
 // 3) 自愈：_syncLlmSettings 应该发现不一致并重新下发
 await panel._syncLlmSettings();
-const healed = await (await fetch(`${origin}/api/llm/test`, {
-  method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: '{}',
-})).json();
+const healed = await enginePost('/api/llm/test', {});
 check('_syncLlmSettings 之后能正常调用', healed.ok === true, JSON.stringify(healed).slice(0, 160));
-check('自愈后仍然指向同一个桥', (await (await fetch(`${origin}/api/llm/settings`)).json()).base_url === settings.base_url);
+check('自愈后仍然指向同一个桥', (await engineGet('/api/llm/settings')).base_url === settings.base_url);
 
 panel.stop();
 host.__testing.stopAllPanels();

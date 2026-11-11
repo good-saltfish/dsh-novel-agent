@@ -179,7 +179,9 @@ const { server, origin } = await serve(getHandler());
     const settings = await call(origin, 'GET', `projects`); // 触发引擎就绪
     void settings;
     const engineUrl = panel.origin;
-    const llm = await fetch(`${engineUrl}/api/llm/settings`).then((r) => r.json());
+    // 引擎带 panel 令牌：插件启动时总会带，直连引擎的测试必须自己补。
+    const engineHeaders = { 'x-ndecon-token': panel.panelToken };
+    const llm = await fetch(`${engineUrl}/api/llm/settings`, { headers: engineHeaders }).then((r) => r.json());
     llm && llm.provider === 'custom'
       ? ok('引擎的 LLM 设置被改成 custom（指向模型桥）')
       : bad('引擎的 LLM 设置被改成 custom', JSON.stringify(llm));
@@ -190,7 +192,7 @@ const { server, origin } = await serve(getHandler());
     // 让引擎自己发起一次连通性测试：它会真的 POST 到桥，桥再转给假 llm。
     const test = await fetch(`${engineUrl}/api/llm/test`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...engineHeaders, 'content-type': 'application/json' },
       body: '{}',
     }).then((r) => r.json());
     test && test.ok === true

@@ -89,6 +89,16 @@ let projectId = null;
   projectId
     ? ok('novel_project_create 建出项目并返回 id')
     : bad('novel_project_create 返回 id', text.slice(0, 300));
+  // 早前读的是 `scaffold`/`parts`（服务端其实返回 `draft`），结果永远是
+  // 「骨架生成结果未返回部件清单」却照样算通过。fake provider 生成的是完整
+  // 骨架，四个必备部件必须都列出来。
+  {
+    const PARTS = ['定位', '主角', '金手指', '细纲'];
+    const absent = PARTS.filter((label) => !text.includes(label));
+    text.includes('骨架部件') && absent.length === 0 && !text.includes('未返回部件清单')
+      ? ok(`novel_project_create 报出骨架部件（${PARTS.join('/')}）`)
+      : bad('novel_project_create 报出骨架部件', `缺：${absent.join('、')}｜${text.slice(0, 300)}`);
+  }
 }
 
 if (projectId) {
@@ -101,9 +111,13 @@ if (projectId) {
   {
     const pack = await tool('novel_context_pack').execute({ project_id: projectId, order: 2 });
     const text = pack && pack.text ? pack.text : '';
-    text.includes('上下文包') && !text.includes('未注入：')
-      ? ok('novel_context_pack 返回五块且没有未注入部件')
-      : bad('novel_context_pack', text.slice(0, 400));
+    // 只断言「有上下文包」太弱：早前读错键时整段只剩一行索引文档数，照样能过。
+    // 这里逐个要求五块真的出现，缺任何一块都算失败。
+    const BLOCKS = ['定位', '主角', '金手指', '细纲', '前情', '检索命中', '未回收伏笔'];
+    const absent = BLOCKS.filter((label) => !text.includes(`${label}`));
+    text.includes('上下文包') && absent.length === 0 && !text.includes('未注入：')
+      ? ok(`novel_context_pack 返回五块（${BLOCKS.length} 个标签齐全）且没有未注入部件`)
+      : bad('novel_context_pack 五块齐全', `缺：${absent.join('、')}｜${text.slice(0, 400)}`);
   }
   {
     const gen = await tool('novel_chapter_generate').execute({ project_id: projectId, order: 1 });
