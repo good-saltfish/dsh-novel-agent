@@ -52,10 +52,12 @@ plugin_manager install_bundle "dsh-novel-agent"
 |---|---|---|
 | `SSL: EOF occurred in violation of protocol` | Windows 注册表里登记了一个已经关掉的代理，pip 每个 HTTPS 请求都连到没人监听的端口 | 第二轮自动加 `NO_PROXY=*` 绕开系统代理重试 |
 | `Permission denied` / `WinError 5` | Python 装在 `C:\Program Files` 下，没有写权限 | 第二轮自动改 `--user` 装到用户目录 |
-| `Could not find a version` | 网络连不上 PyPI | 提示可设 `PIP_INDEX_URL` 或手动用清华镜像 |
+| `Could not find a version` | 网络连不上 PyPI | 先绕代理重试，仍不通就改从 GitHub Release 下载 wheel 安装 |
 | 装完仍 `找不到 ndecon` | pip 与 python 不是同一个环境（`py -3` 与 `python` 常指向不同环境） | 提示在设置里填解释器绝对路径 |
 
-**绝不自己换镜像源**——换源是供应链决定，不是插件该替用户做的。
+最多三轮：原样装 → 按失败类别降级（`--user` 或绕代理）→ PyPI 实在不通时换 GitHub 下的
+同一份 wheel。**绝不自己换镜像源**——换源是供应链决定，不是插件该替用户做的；换到官方
+GitHub Release 只是换传输通道，装的还是同一个包。
 
 ## 前置条件
 

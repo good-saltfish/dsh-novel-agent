@@ -138,6 +138,52 @@ await test('代理挂了 → 第二轮绕开系统代理重试', async () => {
   assert.equal(installs, 2);
 });
 
+await test('PyPI 怎么都不通 → 第三轮改从 GitHub Release 下 wheel', async () => {
+  // PyPI 与 GitHub 是不同的 CDN、不同的封锁名单。只试 PyPI 等于把一整个网络的
+  // 用户判死，而换源这条兜底是他们唯一能自己恢复的路。
+  resetInstallCache();
+  const targets = [];
+  const run = fakeRun((argv, options) => {
+    if (argv.includes('--version')) return { ok: true, code: 0, stdout: 'pip 24.0', stderr: '' };
+    targets.push(argv[argv.length - 1]);
+    // 第一轮按用户环境原样跑；一旦认出是网络类失败，后面每一轮都要绕代理。
+    if (targets.length >= 2) assert.equal(options.env?.NO_PROXY, '*', '网络类失败后每一轮都要绕代理');
+    else assert.ok(!options.env?.NO_PROXY, '第一轮不该绕代理：GFW 用户正是靠它连 PyPI');
+    if (targets.length <= 2) return PROXY_FAIL;
+    return OK;
+  });
+  const state = await ensureEngine({
+    pythonArgv: ['python'],
+    detect: async () => (targets.length >= 3 ? '0.2.0' : null),
+    run,
+  });
+  assert.equal(state.state, 'installed');
+  assert.equal(state.attempt, 3);
+  assert.equal(targets[0], 'novel-deconstruct', '第一轮必须走 PyPI 包名');
+  assert.equal(targets[1], 'novel-deconstruct', '第二轮只绕代理，不换源');
+  assert.match(targets[2], /github\.com\/.*releases\/latest\/download\/novel-deconstruct-py3-none-any\.whl$/);
+  assert.ok(!/0\.2\.0/.test(targets[2]), '文件名不能带版本号，否则下次发版就 404');
+});
+
+await test('没权限时第二轮仍然装 PyPI 包名，不因为权限去换源', async () => {
+  // 换源解决的是「连不上」，与「能不能写盘」无关。混在一起会让失败原因失真。
+  resetInstallCache();
+  const targets = [];
+  const run = fakeRun((argv) => {
+    if (argv.includes('--version')) return { ok: true, code: 0, stdout: 'pip 24.0', stderr: '' };
+    targets.push(argv[argv.length - 1]);
+    if (targets.length === 1) return PERMISSION_FAIL;
+    return OK;
+  });
+  await ensureEngine({
+    pythonArgv: ['python'],
+    detect: async () => (targets.length >= 2 ? '0.2.0' : null),
+    run,
+  });
+  assert.equal(targets.length, 2);
+  assert.equal(targets[1], 'novel-deconstruct');
+});
+
 await test('没权限 → 第二轮加 --user', async () => {
   resetInstallCache();
   let installs = 0;
@@ -160,7 +206,7 @@ await test('没权限 → 第二轮加 --user', async () => {
   assert.equal(state.attempt, 2);
 });
 
-await test('两轮都失败 → 失败状态带类别与下一步，且不再多试', async () => {
+await test('三轮都失败 → 失败状态带类别与下一步，且不再多试', async () => {
   resetInstallCache();
   const run = fakeRun((argv) => {
     if (argv.includes('--version')) return { ok: true, code: 0, stdout: 'pip 24.0', stderr: '' };
@@ -171,7 +217,7 @@ await test('两轮都失败 → 失败状态带类别与下一步，且不再多
   assert.equal(state.reason, 'proxy');
   assert.ok(/代理/.test(state.hint), '提示里要直接说代理');
   const installs = run.calls.filter((c) => c.argv.includes('install'));
-  assert.equal(installs.length, 2, `最多两轮，实际跑了 ${installs.length} 次`);
+  assert.equal(installs.length, 3, `最多三轮，实际跑了 ${installs.length} 次`);
 });
 
 await test('没有 pip 时先试 ensurepip；ensurepip 也失败就报 no-pip', async () => {
