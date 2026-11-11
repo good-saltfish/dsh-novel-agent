@@ -2,6 +2,15 @@
 
 版本号与引擎（`novel-deconstruct`）各自独立；这里的「引擎」条目指插件要求的最低引擎行为。
 
+## 0.2.1
+
+- **装引擎多一条兜底**：PyPI 整片不可达时，第三轮改从官方 GitHub Release 下载同一份 wheel
+  安装（`releases/latest/download/novel-deconstruct-py3-none-any.whl`）。PyPI 与 GitHub 走
+  不同 CDN、不同封锁名单，只试前者等于把一整个网络的用户判死。装的还是同一个包，不是换源。
+- 三轮的分工写清楚了：第 1 轮原样 → 第 2 轮按失败类别降级（没权限 `--user`／网络绕代理）→
+  第 3 轮才换传输通道。权限类失败绝不换源，否则失败原因会失真。
+- README 的失败对照表同步更新。
+
 ## 0.2.0
 
 **改名**：`dsh-novel-studio` → `dsh-novel-agent`。旧名在 npm 上已被他人占用（0.3.0），
