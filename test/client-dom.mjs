@@ -736,6 +736,20 @@ check('字数要求可切到严格模式', textOf(homeTree).includes('写不够�
 check('连写按钮带区间', findAll(homeTree, 'button', '连写第 4–13 章').length === 1);
 check('项目页显示细纲总数与游标', textOf(homeTree).includes('细纲 30 章') && textOf(homeTree).includes('第 3 章'));
 
+// 设定候选 / 细纲候选：引擎有 planner 与四条端点，插件曾经一个按钮都没有。
+// 只测文本函数不够——按钮没渲染出来，能力照样对着用户不存在。
+check('项目页有「生成设定候选」按钮',
+  findAll(homeTree, 'button', '生成设定候选').length === 1, textOf(homeTree).slice(0, 600));
+check('项目页有「生成细纲候选」按钮',
+  findAll(homeTree, 'button', '生成细纲候选').length === 1);
+check('没有候选时不显示「确认」按钮（不能让人确认一个不存在的东西）',
+  findAll(homeTree, 'button', '确认设定').length === 0
+  && findAll(homeTree, 'button', '确认细纲').length === 0);
+check('设定候选卡片说明了「生成只是候选、确认才入库」',
+  textOf(homeTree).includes('生成只是候选') && textOf(homeTree).includes('同名同类型不会覆盖'));
+check('细纲候选卡片说明了确认会整章替换节拍',
+  textOf(homeTree).includes('整章替换'));
+
 /* --- 17. 项目页必须有返回入口（否则进去就出不来） ------------------------- */
 
 check('项目页正常渲染时有返回项目列表按钮',
