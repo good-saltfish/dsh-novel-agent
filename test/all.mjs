@@ -1,7 +1,7 @@
 /**
  * 一次跑完所有插件测试。
  *
- * 十二个套件各自独立、互不依赖，任何一个失败都必须让整体失败——
+ * 十三个套件各自独立、互不依赖，任何一个失败都必须让整体失败——
  * 单跑绿、全跑红是最容易漏掉的状态（端口/工作区/设置被别的测试污染）。
  *
  * 跑法：node test/all.mjs
@@ -14,6 +14,7 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 const SUITES = [
+  ['package-json', '打包自检：package.json 无 BOM、能直解析、物料与版本号一致'],
   ['hosttest', '宿主基础：python 探测、CLI、错误可读、panel 起停、并发幂等'],
   ['smoke', '代理与安全：栅栏、穿越、编码、非法 JSON、超大请求体'],
   ['bridge', '模型桥：token、补全、JSON 模式、推理档、失败原因'],

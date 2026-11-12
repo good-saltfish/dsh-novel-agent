@@ -2,6 +2,17 @@
 
 版本号与引擎（`novel-deconstruct`）各自独立；这里的「引擎」条目指插件要求的最低引擎行为。
 
+## 0.2.3
+
+- **修「包不可用」**：`package.json` 被写进了 UTF-8 BOM（三个字节 `EF BB BF`），宿主
+  `JSON.parse` 直接报 `Unexpected token '﻿', "﻿{\n  "name"... is not valid JSON`，插件在
+  列表里显示成「异常 / 包不可用」——一行代码都没跑到。0.2.1 之前的版本没有 BOM，是在
+  0.2.1 升版本号时被带进来的。现在文件是无 BOM 的纯 UTF-8，并且**发布前会自检**：
+  `test/package-json.mjs` 断言 `package.json` 不以 BOM 开头、字段齐全、版本号与
+  `CHANGELOG.md` 顶部一致。
+- 教训记在这里：BOM 在大多数 JSON 解析器里是错误而不是「宽容地忽略」，Windows 上
+  用某些编辑器/PowerShell 重定向保存就会悄悄加上。这类问题只有真装机才会暴露。
+
 ## 0.2.2
 
 - **修「插件崩了」**：0.2.0 改名后，页面启动清单里可能还留着旧包名
