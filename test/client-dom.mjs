@@ -1458,6 +1458,141 @@ check('settingsText 对 null 不抛', typeof T.settingsText(null) === 'string');
   globalThis.fetch = originalFetch;
 }
 
+/* --- 23. 细纲逐章逐字段可改 ---------------------------------------------- */
+
+check('chapterDraftOf 把细纲摊成可编辑草稿（章号按顺序重排，不采信原 order）',
+  T.chapterDraftOf([
+    { order: 7, title: '第七章', beats: [{ order: 1, scene: '街口', event: '追人', characters: ['甲', '乙'] }] },
+  ]).map((c) => `${c.order}:${c.title}`).join(',') === '1:第七章',
+  T.chapterDraftOf([{ order: 7, title: '第七章' }]));
+check('chapterDraftOf 把 characters 列表拼成顿号串（文本框里是字符串）',
+  T.chapterDraftOf([{ order: 1, title: 't', beats: [{ order: 1, scene: 's', event: 'e', characters: ['甲', '乙'] }] }])
+    [0].beats[0].characters === '甲、乙');
+check('chaptersFromDraft 把顿号串拆回列表',
+  JSON.stringify(T.chaptersFromDraft([{ title: 't', beats: [{ scene: 's', event: 'e', characters: '甲、乙' }] }])
+    [0].beats[0].characters) === '["甲","乙"]');
+check('chaptersFromDraft 重排章号从 1 起连续（引擎硬要求）',
+  T.chaptersFromDraft([{ title: 'a' }, { title: 'b' }, { title: 'c' }]).map((c) => c.order).join(',') === '1,2,3');
+check('chaptersFromDraft 丢掉完全空的节拍（场景与事件都空）',
+  T.chaptersFromDraft([{ title: 't', beats: [{ scene: '', event: '' }, { scene: 's', event: '' }] }])
+    [0].beats.length === 1);
+check('chaptersProblem 拦住空细纲', T.chaptersProblem([]) === '细纲至少要有一章。');
+check('chaptersProblem 拦住缺标题的章并指出第几章',
+  (T.chaptersProblem([{ title: '有', beats: [] }, { title: '   ', beats: [] }]) || '').includes('第 2 章'),
+  T.chaptersProblem([{ title: '有' }, { title: '  ' }]));
+check('chaptersProblem 对合法草稿返回 null', T.chaptersProblem([{ title: '第一章', beats: [] }]) === null);
+
+{
+  // 细纲编辑器要真渲染出来、真能改、真能存。
+  const outlineProject = {
+    meta: { id: 'p1', title: '连写书' },
+    premise: '一句话前提',
+    cursor: 0,
+    confirmed_parts: { chapters: 'auto-accepted' },
+    draft: {
+      chapters: [
+        { order: 1, title: '旧录像厅', beats: [{ order: 1, scene: '旧录像厅', event: '翻登记簿', plant_foreshadow: '那页是未来' }] },
+      ],
+    },
+    manuscripts: {},
+  };
+  const originalFetch = globalThis.fetch;
+  let putBody = null;
+  globalThis.fetch = async (url, init) => {
+    const method = (init && init.method) || 'GET';
+    if (method === 'PUT') putBody = { url: String(url), body: JSON.parse(init.body) };
+    return { ok: true, status: 200, async text() { return JSON.stringify(outlineProject); } };
+  };
+  const rowEl = h(T.PartRow, { project: outlineProject, part: 'chapters', busy: false, onSaved() {} });
+  mount(rowEl);
+  let rowTree = await settle(rowEl);
+  // 表头是 ns-kv：里面是「细纲 + chip + 摘要(1 章) + ▸」，不是章标题。
+  const head = findAll(rowTree, 'div').find(
+    (n) => n.props && n.props.onClick && textOf(n).includes('细纲') && textOf(n).includes('章'),
+  );
+  check('细纲部件行以前点了没反应，现在可点开', !!head, textOf(rowTree).slice(0, 200));
+  if (head) {
+    head.props.onClick();
+    rowTree = await settle(rowEl);
+    check('展开后能看到已有章标题（预填，不是空表单）',
+      findAll(rowTree, 'input').some((n) => n.props.value === '旧录像厅'),
+      JSON.stringify(findAll(rowTree, 'input').map((n) => n.props.value)));
+    check('展开后出现章节标题输入框', findAll(rowTree, 'input').length >= 1,
+      String(findAll(rowTree, 'input').length));
+    check('展开后能改节拍（场景/事件输入框在场）',
+      textOf(rowTree).includes('场景') && textOf(rowTree).includes('发生什么'));
+    check('展开后有「保存细纲」按钮', findAll(rowTree, 'button', '保存细纲').length === 1);
+    check('展开后能加拍与删章',
+      findAll(rowTree, 'button').some((b) => textOf(b) === '+ 加一拍')
+      && findAll(rowTree, 'button').some((b) => textOf(b) === '删这一章'));
+
+    // 改标题再存：PUT /parts/chapters，body.content 是第一项数组
+    const titleInput = findAll(rowTree, 'input')[0];
+    titleInput.props.onChange({ target: { value: '改过的章名' } });
+    rowTree = await settle(rowEl);
+    const saveBtn = findAll(rowTree, 'button', '保存细纲')[0];
+    if (saveBtn) await saveBtn.props.onClick();
+    check('保存细纲发出 PUT parts/chapters',
+      !!putBody && putBody.url.includes('/parts/chapters'), putBody && putBody.url);
+    check('保存的 body.content 是数组（引擎按细纲列表校验）',
+      !!putBody && Array.isArray(putBody.body.content), putBody && typeof putBody.body.content);
+    check('保存带上改过的章名',
+      !!putBody && putBody.body.content[0].title === '改过的章名',
+      putBody && putBody.body.content[0] && putBody.body.content[0].title);
+  }
+  globalThis.fetch = originalFetch;
+}
+
+/* --- 23b. 基础信息（书名/题材/前提）可改 ---------------------------------- */
+
+check('textChars 与引擎 _save_chapter 同口径（去空白计字：他/说/：/好/的 = 5）',
+  T.textChars('他 说：\n好 的') === 5, T.textChars('他 说：\n好 的'));
+
+{
+  const originalFetch = globalThis.fetch;
+  let patched = null;
+  globalThis.fetch = async (url, init) => {
+    const method = (init && init.method) || 'GET';
+    const path = String(url && url.pathname ? url.pathname : url);
+    if (method === 'PATCH') {
+      patched = JSON.parse(init.body);
+      // 引擎真实行为：只认 genre/premise，title 被静默丢掉
+      const saved = { ...projectPayload, genre: patched.genre, premise: patched.premise };
+      return { ok: true, status: 200, async text() { return JSON.stringify(saved); } };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } };
+  };
+  const homeEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+  mount(homeEl);
+  let tree = await settle(homeEl);
+  check('项目页给了「改基础信息」入口',
+    findAll(tree, 'button', '改基础信息').length === 1, textOf(tree).slice(0, 400));
+  const editBtn = findAll(tree, 'button', '改基础信息')[0];
+  if (editBtn) {
+    editBtn.props.onClick();
+    tree = await settle(homeEl);
+    check('点编辑后书名/题材变成输入框',
+      findAll(tree, 'input').length >= 2, String(findAll(tree, 'input').length));
+    check('编辑态有「保存」按钮', findAll(tree, 'button', '保存').length >= 1);
+    const books = findAll(tree, 'input');
+    books[0].props.onChange({ target: { value: '改过的书名' } });
+    books[1].props.onChange({ target: { value: '科幻' } });
+    tree = await settle(homeEl);
+    const saveBtn = findAll(tree, 'button', '保存')[0];
+    if (saveBtn) await saveBtn.props.onClick();
+    tree = await settle(homeEl);
+    check('保存发出 PATCH 且带 title/genre/premise',
+      !!patched && patched.title === '改过的书名' && patched.genre === '科幻',
+      JSON.stringify(patched));
+    // 引擎不认 title：必须如实说「书名没改成」，不能假装保存成功
+    check('引擎没改书名时如实告知，不谎报成功',
+      textOf(tree).includes('书名没改成'), textOf(tree).slice(0, 600));
+    check('题材与前提仍然保存成功并说明',
+      textOf(tree).includes('题材与前提已保存'), textOf(tree).slice(0, 600));
+  }
+  globalThis.fetch = originalFetch;
+}
+
 console.log(`\n通过 ${passed.length} 项：`);
 for (const name of passed) console.log(`  [ok] ${name}`);
 if (failed.length > 0) {
