@@ -2,6 +2,19 @@
 
 版本号与引擎（`novel-deconstruct`）各自独立；这里的「引擎」条目指插件要求的最低引擎行为。
 
+## 0.2.2
+
+- **修「插件崩了」**：0.2.0 改名后，页面启动清单里可能还留着旧包名
+  （`dsh-novel-studio/client.js`）的 URL，与新的 `dsh-novel-agent` 指向同一个文件。宿主
+  `__ModuleLoader__` 拿 id 当唯一键，同一份代码注册两次会抛
+  `duplicate factory registration for "dsh-novel-agent"`，右栏半边直接加载失败。
+  现在只吞「重复注册」这一种，其它错误照旧抛；宿主 invalidate 之后的**合法重注册仍然放行**
+  （用「注册过就跳过」的标记会把热重载一起挡死，那样右栏再也回不来）。
+  日志会写一行提示，彻底清掉的办法是重启一次 DSH 宿主。
+- 两条回归测试：`test/client-double-load.mjs` 真的把文件执行两遍（含 invalidate 后重注册），
+  `test/verify_double_load_guard.mjs` 反过来验证「拿掉守卫后它必须失败」——避免写出一条
+  永远绿的假测试。
+
 ## 0.2.1
 
 - **装引擎多一条兜底**：PyPI 整片不可达时，第三轮改从官方 GitHub Release 下载同一份 wheel
