@@ -1593,6 +1593,156 @@ check('textChars 与引擎 _save_chapter 同口径（去空白计字：他/说/�
   globalThis.fetch = originalFetch;
 }
 
+/* --- 24. 设定稿 → 骨架：先预览，再决定要不要落盘 ------------------------- */
+
+const IMPORT_DRAFT = {
+  title: '守灯人',
+  parts: {
+    chapters: [
+      { order: 1, title: '第一盏灯', core_event: '陈默接手北塔', opening_hook: '', ending_hook: '', beats: [{ order: 1, scene: '塔顶', event: '点亮灯' }] },
+      { order: 2, title: '灯灭之夜', core_event: '', opening_hook: '', ending_hook: '', beats: [] },
+    ],
+    positioning: { genre: '悬疑', audience: '', core_premise: '灯灭后黑暗会顶替人', selling_points: [], tone_target: '' },
+    protagonist: { name: '陈默', background: '', personality: '', desire: '', flaw: '', signature_ability: '' },
+    golden_finger: { name: '灯焰辨伪', form: '', ability: '', cost_limitation: '视力模糊半天', growth_path: '' },
+  },
+  settings: [
+    { entry_type: 'world_rule', name: '长夜边界', content: '不能离开灯照范围', tags: [], related_chapters: [] },
+    { entry_type: 'character', name: '老周', content: '上一任守灯人', tags: [], related_chapters: [] },
+  ],
+  dropped: [{ part: 'volume', reason: '没解析出卷名（引擎必填）' }],
+  notes: ['稿子里没写金手指的成长路径，留空了。'],
+};
+
+check('draftParts 按固定顺序给出解析出的部件',
+  JSON.stringify(T.draftParts(IMPORT_DRAFT)) === JSON.stringify(['positioning', 'protagonist', 'golden_finger', 'chapters']),
+  JSON.stringify(T.draftParts(IMPORT_DRAFT)));
+check('draftParts 对 null / 空对象安全',
+  T.draftParts(null).length === 0 && T.draftParts({}).length === 0);
+
+const previewText = T.importPreviewText(IMPORT_DRAFT);
+check('预览写出书名', previewText.includes('守灯人'), previewText.slice(0, 120));
+check('预览列出骨架部件', previewText.includes('4 个骨架部件'), previewText);
+check('预览说明细纲章数与节拍数', previewText.includes('2 章') && previewText.includes('1 拍'), previewText);
+check('预览点出没有节拍的章（正文会更依赖模型发挥）', previewText.includes('其中 1 章没有节拍'), previewText);
+check('预览写出设定库条数与分类明细',
+  previewText.includes('设定库 2 条') && previewText.includes('世界规则 1'), previewText);
+check('预览列出被拒收的部件与原因（不静默丢弃）',
+  previewText.includes('没要') && previewText.includes('卷纲') && previewText.includes('没解析出卷名'), previewText);
+check('预览带出模型备注', previewText.includes('模型备注') && previewText.includes('成长路径'), previewText);
+check('预览对 null 不抛', T.importPreviewText(null).includes('还没解析'));
+check('预览对「一个部件都没解析出来」也有话说',
+  T.importPreviewText({ parts: {}, settings: [], dropped: [], notes: [] }).includes('一个骨架部件都没解析出来'));
+
+{
+  const mdForm = h(T.CreateForm, { busy: false, onCreated() {} });
+  let mdTree = mount(mdForm);
+  // 表单本身是折叠的，先展开才能看到「贴设定稿」。
+  findAll(mdTree, 'button', '新建项目')[0].props.onClick();
+  mdTree = mount(mdForm);
+  check('新建表单默认不展开设定稿（不把最快的那条路堵住）',
+    findAll(mdTree, 'textarea').length === 0, textOf(mdTree).slice(0, 300));
+  const mdBtn = findAll(mdTree, 'button').find((b) => textOf(b).includes('贴设定稿'));
+  check('新建表单给了「贴设定稿」入口', !!mdBtn, textOf(mdTree).slice(0, 500));
+  if (mdBtn) {
+    mdBtn.props.onClick();
+    mdTree = mount(mdForm);
+    const ta = findAll(mdTree, 'textarea');
+    check('展开后有 Markdown 输入框', ta.length === 1, String(ta.length));
+    check('展开后有「解析」按钮', findAll(mdTree, 'button', '解析').length === 1);
+    const useBtn = findAll(mdTree, 'button').find((b) => textOf(b).includes('用这份草稿建项目'));
+    check('展开后有「用这份草稿建项目」按钮', !!useBtn, textOf(mdTree).slice(0, 600));
+    check('还没有草稿时「用这份草稿建项目」是禁用的', !!useBtn && useBtn.props.disabled === true);
+    // 稿子太短：本地就拦下来，不该白跑一次请求。
+    if (ta.length === 1) {
+      ta[0].props.onChange({ target: { value: '太短' } });
+      mdTree = mount(mdForm);
+      await findAll(mdTree, 'button', '解析')[0].props.onClick();
+      mdTree = mount(mdForm);
+      check('稿子太短时本地拦下并说明',
+        textOf(mdTree).includes('设定稿太短') || textOf(mdTree).includes('至少 40 字'),
+        textOf(mdTree).slice(0, 600));
+    }
+  }
+}
+
+/* --- 24b. 用草稿建项目：骨架走 PUT parts，不重新生成 ---------------------- */
+
+{
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let mdTree = null;
+  let formEl = null;
+  globalThis.fetch = async (url, init) => {
+    const method = (init && init.method) || 'GET';
+    const path = String(url && url.pathname ? url.pathname : url);
+    const body = init && init.body ? JSON.parse(init.body) : null;
+    calls.push({ method, path, body });
+    // `_status`：假装已经配好模型，否则「解析」会被本地拦下。
+    if (path.endsWith('/_status')) {
+      return { ok: true, status: 200, async text() { return JSON.stringify({ hasModel: true, running: true }); } };
+    }
+    if (path.endsWith('/_import/md')) {
+      return { ok: true, status: 200, async text() { return JSON.stringify(IMPORT_DRAFT); } };
+    }
+    if (path.endsWith('/projects/create')) {
+      return { ok: true, status: 200, async text() { return JSON.stringify({ meta: { id: 'creation-守灯人-1', title: '守灯人' } }); } };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify({}); } };
+  };
+  formEl = h(T.CreateForm, { busy: false, onCreated(projectId) { calls.push({ created: projectId }); } });
+  mdTree = mount(formEl);
+  await settle(formEl);
+  findAll(mdTree, 'button', '新建项目')[0].props.onClick();
+  mdTree = await settle(formEl);
+  findAll(mdTree, 'button').find((b) => textOf(b).includes('贴设定稿')).props.onClick();
+  mdTree = await settle(formEl);
+  const mdText = [
+    '# 守灯人',
+    '',
+    '长夜降临三百年，灯火是人间唯一的边界。灯灭之后，黑暗会顶替站在原处的人。',
+    '守灯人负责在每一座灯楼添油，一天一次，不能多也不能少。',
+    '陈默接手北塔的第一夜，就在登记簿上看见自己的名字已被划掉。',
+    '',
+  ].join('\n');
+  findAll(mdTree, 'textarea')[0].props.onChange({ target: { value: mdText } });
+  // settle 会重新渲染并返回新树；不接住它，下面拿到的「解析」按钮还是旧闭包，
+  // markdown 仍是空串，会在本地就被「太短」拦下（本轮踩过）。
+  mdTree = await settle(formEl);
+  await findAll(mdTree, 'button', '解析')[0].props.onClick();
+  mdTree = await settle(formEl);
+  check('解析后显示预览（含拒收原因）',
+    textOf(mdTree).includes('解析结果') && textOf(mdTree).includes('没解析出卷名'),
+    textOf(mdTree).slice(0, 500));
+  check('解析请求带上了 Markdown 原文',
+    calls.some((c) => c.path && c.path.endsWith('/_import/md') && c.body && String(c.body.markdown).includes('守灯人')),
+    JSON.stringify(calls.filter((c) => c.path && c.path.endsWith('/_import/md'))));
+
+  const useBtn = findAll(mdTree, 'button').find((b) => textOf(b).includes('用这份草稿建项目'));
+  check('拿到草稿后「用这份草稿建项目」可点', !!useBtn && useBtn.props.disabled === false);
+  if (useBtn) {
+    await useBtn.props.onClick();
+    const puts = calls.filter((c) => c.method === 'PUT' && c.path.includes('/parts/'));
+    check('草稿按部件写进项目（PUT /parts/<part>）', puts.length === 4, puts.map((c) => c.path).join(','));
+    check('写了定位', puts.some((c) => c.path.endsWith('/parts/positioning')));
+    check('写了细纲', puts.some((c) => c.path.endsWith('/parts/chapters')));
+    const chaptersPut = puts.find((c) => c.path.endsWith('/parts/chapters'));
+    check('细纲写的是稿子里的章（不是引擎重新生成的）',
+      !!chaptersPut && chaptersPut.body.content.length === 2 && chaptersPut.body.content[1].title === '灯灭之夜',
+      JSON.stringify(chaptersPut && chaptersPut.body.content.map((c) => c.title)));
+    check('设定库走 plan/accept/settings',
+      calls.some((c) => c.path && c.path.endsWith('/plan/accept/settings') && c.body.entries.length === 2),
+      JSON.stringify(calls.filter((c) => c.path && c.path.endsWith('/plan/accept/settings'))));
+    check('稿子里有细纲时不再调引擎 generate（不重复生成）',
+      !calls.some((c) => c.path && c.path.endsWith('/generate')),
+      calls.map((c) => c.path).filter((p) => p && p.endsWith('/generate')).join(','));
+    check('建完把 projectId 交回给列表页',
+      calls.some((c) => c.created === 'creation-守灯人-1'),
+      JSON.stringify(calls.filter((c) => c.created)));
+  }
+  globalThis.fetch = originalFetch;
+}
+
 console.log(`\n通过 ${passed.length} 项：`);
 for (const name of passed) console.log(`  [ok] ${name}`);
 if (failed.length > 0) {

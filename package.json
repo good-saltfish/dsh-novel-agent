@@ -1,6 +1,6 @@
 {
   "name": "dsh-novel-agent",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "DSH 右侧栏小说工作台：托管本地 ndecon 引擎，把「新建项目 → 生成骨架 → 看上下文包 → 生成一章 → 过硬门 → 连写续跑」搬进右栏。A DSH right-sidebar novel studio that hosts the local ndecon engine and exposes project, context-pack, chapter, and gate surfaces.",
   "type": "module",
   "main": "./lib/host.js",

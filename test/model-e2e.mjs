@@ -251,6 +251,78 @@ const { server, origin } = await serve(getHandler());
   served.server.close();
 }
 
+// 7. `_import/md` 路由：设定稿经宿主 llm 拆成草稿。
+//
+// 走真实的 handler + 真实的桥，只有 llm 是假的——要验的是「路由接上了、
+// 提示词到了模型、模型的 JSON 被归一化」，不是模型水平。
+{
+  const importing = fakeCtx();
+  const seen = [];
+  importing.ctx.llm.stream = async function* stream(params) {
+    seen.push(params);
+    const reply = JSON.stringify({
+      title: '守灯人',
+      positioning: { genre: '悬疑', core_premise: '灯灭之后黑暗会顶替人' },
+      protagonist: { name: '陈默' },
+      // 故意漏掉 cost_limitation：引擎必填，必须被拒收并列进 dropped。
+      golden_finger: { name: '灯焰辨伪', ability: '看油的来路' },
+      chapters: [{ title: '第一盏灯', beats: [{ scene: '塔顶', event: '点亮灯' }] }],
+      settings: [{ entry_type: 'world_rule', name: '长夜边界', content: '不能离开灯照范围' }],
+    });
+    // 前后加解释文字，模拟真模型爱加围栏。
+    yield { type: 'text-delta', text: `好的：\n\`\`\`json\n${reply}\n\`\`\`\n以上。` };
+    yield { type: 'finish', reason: { kind: 'stop' } };
+  };
+  host.apply(importing.ctx);
+  const served = await serve(importing.getHandler());
+  const md = '# 守灯人\n\n长夜降临，灯火是唯一的边界。守灯人负责在每一座灯楼添油。\n\n## 人物\n陈默，一个沉默寡言的年轻守灯人。\n';
+  const { status, body } = await call(served.origin, 'POST', '_import/md', { markdown: md, hints: { title: '守灯人' } });
+  const value = body && body.value;
+  status === 200 && value
+    ? ok('_import/md 返回 200 与草稿')
+    : bad('_import/md 返回 200 与草稿', `status=${status} ${JSON.stringify(body)}`);
+  value && value.parts && value.parts.positioning && value.parts.positioning.genre === '悬疑'
+    ? ok('草稿里带上了定位')
+    : bad('草稿里带上了定位', JSON.stringify(value && value.parts));
+  value && value.parts && value.parts.chapters && value.parts.chapters.length === 1
+    ? ok('草稿里带上了细纲')
+    : bad('草稿里带上了细纲', JSON.stringify(value && value.parts && value.parts.chapters));
+  value && !(value.parts || {}).golden_finger
+    ? ok('缺"限制与代价"的金手指被拒收（不写进草稿）')
+    : bad('缺"限制与代价"的金手指被拒收', JSON.stringify(value && value.parts && value.parts.golden_finger));
+  value && Array.isArray(value.dropped) && value.dropped.some((d) => d.part === 'golden_finger')
+    ? ok('拒收原因如实带出（用户能看到少了什么）')
+    : bad('拒收原因如实带出', JSON.stringify(value && value.dropped));
+  value && value.settings && value.settings.length === 1
+    ? ok('设定库带出来了')
+    : bad('设定库带出来了', JSON.stringify(value && value.settings));
+  seen.length === 1 && String(seen[0].system || '').includes('JSON')
+    ? ok('提示词通过桥带进了 system（要求 JSON）')
+    : bad('提示词通过桥带进了 system', JSON.stringify(seen[0] && seen[0].system));
+
+  // 稿子太短：不能白调一次模型。
+  const before = seen.length;
+  const tooShort = await call(served.origin, 'POST', '_import/md', { markdown: '短' });
+  tooShort.status === 400
+    ? ok('稿子太短时回 400')
+    : bad('稿子太短时回 400', `status=${tooShort.status} ${JSON.stringify(tooShort.body)}`);
+  seen.length === before
+    ? ok('稿子太短时一次模型调用都不发')
+    : bad('稿子太短时一次模型调用都不发', `${before} → ${seen.length}`);
+
+  // 模型什么都没拆出来：要报错，不能回一份空草稿让人以为成功了。
+  importing.ctx.llm.stream = async function* stream() {
+    yield { type: 'text-delta', text: '{"notes":["看不懂这份稿子"]}' };
+    yield { type: 'finish', reason: { kind: 'stop' } };
+  };
+  const empty = await call(served.origin, 'POST', '_import/md', { markdown: md });
+  empty.status === 502
+    ? ok('模型没拆出东西时回 502（不假装成功）')
+    : bad('模型没拆出东西时回 502', `status=${empty.status} ${JSON.stringify(empty.body)}`);
+
+  served.server.close();
+}
+
 stopAllPanels();
 server.close();
 await fs.rm(dataRoot, { recursive: true, force: true }).catch(() => {});
