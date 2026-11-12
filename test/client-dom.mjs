@@ -548,6 +548,82 @@ check('笔法报告无越界时给结论',
   T.styleText({ version: 'style-v1', cjk_chars: 2600, score: 0, findings: [] })
     .includes('全部落在人类分布内'));
 
+/* --- 13c. 章节自评展示：字段名对齐 ndecon/creation/models.py -------------- */
+
+// 自评是引擎写进 ManuscriptRecord.review 的，插件这边以前一个字都不显示，
+// 于是「模型自己觉得这章钩子只有 2 分」这条信息在右栏根本不存在。
+const reviewSample = {
+  hook_strength: 2, info_density: 4, outline_followed: false,
+  deviations: ['主角提前用出了金手指', '章尾没有留下钩子'],
+  notes: '节奏偏慢', model_id: 'qmodel_latest', prompt_version: 'cw-v1',
+};
+const reviewOutput = T.reviewText(reviewSample);
+check('自评显示钩子强度', reviewOutput.includes('钩子强度') && reviewOutput.includes('2/5'));
+check('自评用星号表示分数', reviewOutput.includes('★★☆☆☆'));
+check('自评显示信息密度', reviewOutput.includes('信息密度') && reviewOutput.includes('★★★★☆'));
+check('自评说明是否按细纲', reviewOutput.includes('是否按细纲推进：否'));
+check('自评逐条列偏离', reviewOutput.includes('主角提前用出了金手指')
+  && reviewOutput.includes('章尾没有留下钩子'));
+check('自评带模型名与提示词版本',
+  reviewOutput.includes('qmodel_latest') && reviewOutput.includes('cw-v1'));
+check('自评 null 返回空串（不渲染空卡片）', T.reviewText(null) === '');
+check('自评没有偏离时不列这一节', !T.reviewText({ hook_strength: 5, info_density: 5 })
+  .includes('偏离细纲'));
+
+// `rule:*` 是规则产物，不是模型真读过。混在一起说会被当成模型意见。
+check('自评标明规则产物', T.reviewText({ hook_strength: 3, rule_only: true, model_id: 'rule:mechanical' })
+  .includes('规则判定（非模型自评）'));
+
+/* --- 13d. 设定候选 / 细纲候选展示 ---------------------------------------- */
+
+// 引擎的 planner 早就写好了，插件里却连一个入口都没有——这段测的是
+// 「候选长什么样」能不能被用户读懂：类型要是中文、金手指的代价不能丢、
+// 节拍要按章聚合。字段名对齐 ndecon/creation/models.py。
+const settingsSample = {
+  entries: [
+    { entry_type: 'world_rule', name: '灵潮退去', content: '灵气每甲子退一次，退潮后术法失效三日', tags: ['核心设定'], related_chapters: [1, 2] },
+    { entry_type: 'character', name: '陆观澜', content: '主角，退潮那年入道', tags: [] },
+  ],
+  golden_finger: { name: '旧潮灯', form: '器物', ability: '照见灵气旧路', cost_limitation: '每用一次烧掉一年寿元', growth_path: '三盏 → 七盏' },
+  notes: ['设定偏少，可再加两条势力'],
+  model_id: 'qmodel_latest', prompt_version: 'plan-v1',
+};
+const settingsOutput = T.planSettingsText(settingsSample);
+check('设定候选显示条数', settingsOutput.includes('设定候选 2 条'));
+check('设定类型翻成中文而不是 world_rule', settingsOutput.includes('【世界规则】') && !settingsOutput.includes('world_rule'));
+check('设定候选带条目名与内容',
+  settingsOutput.includes('灵潮退去') && settingsOutput.includes('灵气每甲子退一次'));
+check('设定候选带标签', settingsOutput.includes('核心设定'));
+check('金手指必须显示代价与限制',
+  settingsOutput.includes('代价与限制') && settingsOutput.includes('烧掉一年寿元'));
+check('设定候选带产出方与提示词版本',
+  settingsOutput.includes('qmodel_latest') && settingsOutput.includes('plan-v1'));
+check('设定候选带说明', settingsOutput.includes('设定偏少'));
+check('设定候选 null 不抛', T.planSettingsText(null) === '（无结果）');
+check('设定候选没有金手指时不渲染这一节',
+  !T.planSettingsText({ entries: [] }).includes('【金手指】'));
+
+const outlineSample = {
+  chapters: [
+    { order: 1, emotion_track: '紧张→释然', beats: [
+      { order: 1, scene: '退潮河滩', characters: ['陆观澜'], event: '捡到旧潮灯', plant_foreshadow: '灯上有第二种笔迹' },
+      { order: 2, scene: '渡口', characters: ['陆观澜', '老周'], event: '老周不肯说灯从哪来' },
+    ] },
+    { order: 2, beats: [{ order: 1, scene: '祠堂', event: '族长封灯' }] },
+  ],
+  notes: ['第二章节拍偏少'],
+  model_id: 'qmodel_latest', prompt_version: 'plan-v1',
+};
+const outlineOutput = T.planOutlineText(outlineSample);
+check('细纲候选显示章数与总节拍', outlineOutput.includes('细纲候选 2 章') && outlineOutput.includes('共 3 个节拍'));
+check('细纲候选按章聚合', outlineOutput.includes('第 1 章') && outlineOutput.includes('2 拍') && outlineOutput.includes('第 2 章'));
+check('细纲候选显示情绪走向', outlineOutput.includes('紧张→释然'));
+check('细纲候选显示场景与事件',
+  outlineOutput.includes('退潮河滩') && outlineOutput.includes('捡到旧潮灯'));
+check('细纲候选显示出场人物', outlineOutput.includes('（陆观澜、老周）'));
+check('细纲候选把伏笔单独列出来', outlineOutput.includes('埋：灯上有第二种笔迹'));
+check('细纲候选 null 不抛', T.planOutlineText(null) === '（无结果）');
+
 /* --- 14. 台账展示只挑本章 ------------------------------------------------ */
 
 const runsSample = { runs: [
