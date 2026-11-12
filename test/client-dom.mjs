@@ -416,6 +416,56 @@ chapterTree = mount(chapterElement);
 check('点编辑后出现正文编辑框', findAll(chapterTree, 'textarea').length === 1);
 check('编辑框预填当前正文', findAll(chapterTree, 'textarea')[0].props.value === '第 1 章正文。');
 
+/* 手动改稿：字数口径、脏标记、还原、没改不让点保存 ---------------------- */
+
+check('编辑态显示字数（口径与引擎 _save_chapter 一致：去空白）',
+  textOf(chapterTree).includes('6 字'), textOf(chapterTree).slice(0, 800));
+check('刚打开编辑时保存是禁用的（没改就别让人点）',
+  findAll(chapterTree, 'button', '保存')[0].props.disabled === true);
+check('刚打开编辑时没有「未保存」标记', !textOf(chapterTree).includes('未保存'));
+
+{
+  // 改一个字：应变成脏、保存变可点、字数跟着变。
+  const textarea = findAll(chapterTree, 'textarea')[0];
+  textarea.props.onChange({ target: { value: '第 1 章正文，改过了。' } });
+  chapterTree = mount(chapterElement);
+  check('改了之后出现「未保存」标记', textOf(chapterTree).includes('未保存'), textOf(chapterTree).slice(0, 800));
+  check('改了之后保存可点', findAll(chapterTree, 'button', '保存')[0].props.disabled === false);
+  check('字数按去空白重算', textOf(chapterTree).includes('10 字'), textOf(chapterTree).slice(0, 800));
+
+  // 「取消」在有改动时要第二次确认：不确认就保留改动。
+  // 「取消」在编辑卡片里，顶栏还有个「取消编辑」——两个都含「取消」，
+  // 按全等挑，否则会点到顶栏那个（它只是折叠卡片，不还原内容）。
+  const cancels = findAll(chapterTree, 'button').filter((b) => textOf(b) === '取消');
+  check('编辑卡片里有「取消」与「还原」两个出口',
+    cancels.length === 1 && findAll(chapterTree, 'button').filter((b) => textOf(b) === '还原').length === 1,
+    findAll(chapterTree, 'button').map((b) => textOf(b)));
+  const originalConfirm = globalThis.window.confirm;
+  let asked = '';
+  globalThis.window.confirm = (message) => { asked = message; return false; };
+  cancels[0].props.onClick();
+  chapterTree = mount(chapterElement);
+  check('有改动时点取消会先问一句', asked.includes('还没保存'), asked);
+  check('拒绝放弃后仍在编辑态、改动还在',
+    findAll(chapterTree, 'textarea').length === 1
+    && findAll(chapterTree, 'textarea')[0].props.value === '第 1 章正文，改过了。');
+
+  // 「还原」：把草稿退回磁盘上的内容，但留在编辑态。
+  findAll(chapterTree, 'button').filter((b) => textOf(b) === '还原')[0].props.onClick();
+  chapterTree = mount(chapterElement);
+  check('还原后退回原文', findAll(chapterTree, 'textarea')[0].props.value === '第 1 章正文。');
+  check('还原后不再是脏的', !textOf(chapterTree).includes('未保存'));
+
+  globalThis.window.confirm = () => true;
+  findAll(chapterTree, 'button').filter((b) => textOf(b) === '取消')[0].props.onClick();
+  chapterTree = mount(chapterElement);
+  check('确认放弃后退出编辑态', findAll(chapterTree, 'textarea').length === 0);
+  chapterTree = mount(chapterElement);
+  findAll(chapterTree, 'button', '编辑')[0].props.onClick();
+  chapterTree = mount(chapterElement);
+  globalThis.window.confirm = originalConfirm;
+}
+
 /* 点「版本」应列出历史版本 */
 fetchScript = Array.from({ length: 30 }, () => ({ order: 1, versions: ['20261101-231911-000001'] }));
 await findAll(chapterTree, 'button', '版本')[0].props.onClick();
@@ -1225,6 +1275,186 @@ check('elapsedText 秒级显示秒', T.elapsedText(new Date(Date.now() - 5000).t
   check('字数提示显示成「已入库」而不是失败',
     textOf(advTree).includes('已入库') && textOf(advTree).includes('字数不在目标带内'),
     textOf(advTree).slice(0, 700));
+  globalThis.fetch = originalFetch;
+}
+
+/* --- 22. Markdown 全貌：同一份 project.json 的另一种看法 ------------------ */
+
+{
+  // 用户要「以 md 的形式完整展示（面板也保留，二者选其一）」。这里的断言盯着
+  // 一件事：Markdown 是从 project 直接投影出来的，不是另存一份摘要。少一块内容，
+  // 用户切过去就会以为数据丢了。
+  const full = {
+    meta: { id: 'p2', title: '视界之外' },
+    genre: '悬疑',
+    premise: '一个能看见裂缝的人',
+    cursor: 2,
+    confirmed_parts: { positioning: 'human-confirmed', protagonist: 'auto-accepted' },
+    draft: {
+      positioning: { genre: '悬疑', audience: '男频', core_premise: '裂缝看得见', selling_points: ['规则怪谈', '代价'], tone_target: '冷硬' },
+      protagonist: { name: '陆沉', personality: '寡言', flaw: '不肯求人' },
+      chapters: [
+        {
+          order: 1,
+          title: '登记簿',
+          core_event: '看见自己名字被划掉',
+          beats: [{ order: 1, scene: '旧录像厅', event: '翻登记簿', characters: ['陆沉', '放映员'], plant_foreshadow: '被撕掉那页是未来' }],
+        },
+      ],
+    },
+    settings: [
+      { entry_type: 'world_rule', name: '异常不可直视', content: '直视超过三秒会失忆', tags: ['观测限制'], related_chapters: [1] },
+      { entry_type: 'character', name: '放映员', content: '记得所有来客的名字' },
+    ],
+    manuscripts: { ch1: { order: 1, status: 'auto-accepted', word_count: 2798, updated_at: '2026-11-01T23:19:11' } },
+  };
+  const md = T.projectMarkdown(full);
+  check('Markdown 以书名开头', md.startsWith('# 视界之外'), md.slice(0, 60));
+  check('Markdown 带题材与一句话设定',
+    md.includes('题材：悬疑') && md.includes('一句话设定：一个能看见裂缝的人'), md.slice(0, 400));
+  check('Markdown 有定位段并标出确认状态',
+    md.includes('## 定位（已人工确认）'), md.slice(0, 600));
+  check('Markdown 把定位字段逐条列出（不是 JSON.stringify）',
+    md.includes('卖点：') && md.includes('规则怪谈') && !md.includes('{'), md.slice(0, 800));
+  check('Markdown 有主角段（状态是已自动验收）', md.includes('## 主角（已自动验收）'), md.slice(0, 800));
+  check('Markdown 有设定库并按类型分组',
+    md.includes('## 设定库（2 条）') && md.includes('### 世界规则（1）') && md.includes('### 人物（1）'), md.slice(0, 1200));
+  check('Markdown 的设定条目带标签与相关章',
+    md.includes('异常不可直视') && md.includes('标签：观测限制') && md.includes('相关章：第 1 章'), md.slice(0, 1400));
+  check('Markdown 有细纲段并展开节拍与伏笔',
+    md.includes('## 细纲（1 章）') && md.includes('### 第 1 章 · 登记簿')
+    && md.includes('翻登记簿') && md.includes('埋伏笔：被撕掉那页是未来'), md.slice(0, 1600));
+  check('Markdown 有已写章节段并带字数时间',
+    md.includes('## 已写章节（1）') && md.includes('2798 字'), md.slice(-400));
+  check('Markdown 说明哪些部件会进上下文', md.includes('会进上下文：定位、主角'), md.slice(0, 500));
+  check('projectMarkdown 对 null 不抛且给出人话', T.projectMarkdown(null).includes('还没加载完'));
+  check('缺部件时 Markdown 不乱补空段',
+    !T.projectMarkdown({ meta: { title: '空书' }, draft: {} }).includes('## 定位'));
+}
+
+/* --- 22b. 可选部件：不填不是错误 ---------------------------------------- */
+
+check('只有细纲是必需部件', T.REQUIRED_PARTS.length === 1 && T.REQUIRED_PARTS[0] === 'chapters');
+check('每个部件都有「要不要填」的说明', ['positioning', 'volume', 'protagonist', 'golden_finger', 'chapters']
+  .every((part) => typeof T.PART_HINT[part] === 'string' && T.PART_HINT[part].length > 8));
+check('卷纲的说明点出它根本不进上下文',
+  T.PART_HINT.volume.includes('不注入'), T.PART_HINT.volume);
+check('金手指的说明允许「整本不要」',
+  T.PART_HINT.golden_finger.includes('可以不要'), T.PART_HINT.golden_finger);
+
+{
+  // 面板上「未生成」和「不需要」必须长得不一样：用户抱怨的正是「有些设定对有些
+  // 书是不需要的，但它显示得像我没填错」。
+  const bare = { meta: { id: 'p3', title: '空书' }, draft: {}, confirmed_parts: {}, manuscripts: {} };
+  const optionalEl = h(T.PartRow, { project: bare, part: 'golden_finger', busy: false, onSaved() {} });
+  mount(optionalEl);
+  const optionalTree = await settle(optionalEl);
+  check('可选部件没填时说的是「不需要（可选）」而不是「未生成」',
+    textOf(optionalTree).includes('不需要（可选）'), textOf(optionalTree).slice(0, 300));
+
+  const requiredEl = h(T.PartRow, { project: bare, part: 'chapters', busy: false, onSaved() {} });
+  mount(requiredEl);
+  const requiredTree = await settle(requiredEl);
+  check('必需部件没填时明确说「必需」',
+    textOf(requiredTree).includes('未生成（必需）'), textOf(requiredTree).slice(0, 300));
+}
+
+/* --- 22c. 视图开关：存在本地，默认面板 ---------------------------------- */
+
+check('视图模式默认是面板', T.readViewMode() === 'panel', T.readViewMode());
+check('未知的视图模式回落成面板', (() => {
+  T.saveViewMode('nonsense');
+  return T.readViewMode() === 'panel';
+})(), T.readViewMode());
+check('切到 Markdown 后能读回来', (() => {
+  T.saveViewMode('markdown');
+  return T.readViewMode() === 'markdown';
+})(), T.readViewMode());
+T.saveViewMode('panel');
+
+/* --- 22d. 设定库 / 角色卡 / 剧情线 -------------------------------------- */
+
+check('设定库为空时说清「也可以整本不要」',
+  T.settingsText([]).includes('也可以整本不要'), T.settingsText([]));
+check('设定库列出类型、名称、内容',
+  T.settingsText([
+    { entry_type: 'world_rule', name: '异常不可直视', content: '直视三秒失忆', tags: ['限制'] },
+  ]).includes('异常不可直视') && T.settingsText([
+    { entry_type: 'world_rule', name: '异常不可直视', content: '直视三秒失忆', tags: ['限制'] },
+  ]).includes('世界规则'));
+check('settingsText 对 null 不抛', typeof T.settingsText(null) === 'string');
+
+{
+  const cards = T.characterCards({
+    draft: { protagonist: { name: '陆沉', personality: '寡言', flaw: '不肯求人' } },
+    settings: [{ entry_type: 'character', name: '放映员', content: '记得所有名字', tags: ['配角'] }],
+  });
+  check('角色卡把主角和设定库人物都收进来', cards.length === 2, cards.map((c) => c.name));
+  check('主角卡片带来源标注', cards.some((c) => c.source === '骨架 · 主角'));
+  check('设定库人物卡片标成配角', cards.some((c) => c.role === '配角/其它'));
+  check('主角卡片只收有值的字段（不输出空标签）',
+    cards[0].facts.every(([, value]) => value), cards[0].facts);
+  check('没角色时给出下一步怎么办',
+    T.charactersText({ draft: {}, settings: [] }).includes('骨架里填「主角」'));
+}
+
+{
+  const rows = T.storylineRows({
+    draft: {
+      chapters: [
+        { order: 2, beats: [{ order: 1, scene: '街口', event: '追人' }] },
+        { order: 1, beats: [{ order: 1, scene: '旧录像厅', event: '翻登记簿', plant_foreshadow: '那页是未来' }, { order: 2, event: '转身' }] },
+      ],
+    },
+  });
+  check('剧情线按章号排序', rows.map((r) => r.chapter).join(',') === '1,1,2', rows.map((r) => r.chapter));
+  check('剧情线带出伏笔标记', rows.some((r) => r.foreshadow === '那页是未来'));
+  check('剧情线说明覆盖几章几拍', T.storylineText({
+    draft: { chapters: [{ order: 1, beats: [{ order: 1, event: 'x' }] }] },
+  }).includes('覆盖 1 章'));
+  check('没节拍时提示从哪儿补',
+    T.storylineText({ draft: {} }).includes('生成细纲候选'));
+}
+
+{
+  // 项目页必须真渲染出「面板 / Markdown」两个按钮，以及设定库与两张折叠卡。
+  // 只测文本函数不够：按钮没渲染出来，能力照样对着用户不存在。
+  // 用固定 responder 而不是 fetchScript：settle 会反复 render、每次都重跑 load()，
+  // 脚本式假 fetch 会被吃空，页面退回「(无题)」空壳，测的就不是目标分支了。
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } });
+  const homeEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+  mount(homeEl);
+  const tree = await settle(homeEl);
+  check('项目页有「面板」与「Markdown」两个视图按钮',
+    findAll(tree, 'button', '面板').length === 1 && findAll(tree, 'button', 'Markdown').length === 1,
+    textOf(tree).slice(0, 500));
+  check('面板视图下没有「复制全部」（只在 Markdown 视图才有意义）',
+    findAll(tree, 'button', '复制全部').length === 0);
+  check('项目页渲染设定库区块', textOf(tree).includes('设定库（'), textOf(tree).slice(0, 900));
+  check('项目页有角色卡与剧情线入口',
+    findAll(tree, 'button').some((b) => textOf(b).includes('角色卡（'))
+    && findAll(tree, 'button').some((b) => textOf(b).includes('剧情线（')), textOf(tree).slice(0, 900));
+  check('角色卡与剧情线默认收起（点开之前不占版面）',
+    !textOf(tree).includes('（还没有角色'), textOf(tree).slice(0, 900));
+
+  // 切到 Markdown：同一次渲染里应当出现整本 md，而面板区块收起来。
+  const mdButton = findAll(tree, 'button', 'Markdown')[0];
+  mdButton.props.onClick();
+  const afterSwitch = await settle(homeEl);
+  check('切到 Markdown 后出现「复制全部」',
+    findAll(afterSwitch, 'button', '复制全部').length === 1);
+  check('切到 Markdown 后正文里出现整本标题行',
+    textOf(afterSwitch).includes('# 连写书'), textOf(afterSwitch).slice(0, 600));
+  check('切到 Markdown 后面板区块收起（不再出现骨架部件说明）',
+    !textOf(afterSwitch).includes('点一行展开可改'), textOf(afterSwitch).slice(0, 900));
+  check('切到 Markdown 后仍然能返回项目列表', findAll(afterSwitch, 'button', '← 返回项目列表').length >= 1);
+
+  const panelButton = findAll(afterSwitch, 'button', '面板')[0];
+  panelButton.props.onClick();
+  const afterPanel = await settle(homeEl);
+  check('切回面板后骨架部件说明回来了',
+    textOf(afterPanel).includes('点一行展开可改'), textOf(afterPanel).slice(0, 900));
   globalThis.fetch = originalFetch;
 }
 
