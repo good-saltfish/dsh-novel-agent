@@ -517,6 +517,37 @@ check('指纹报告逐条列 label 与实测/阈值', lintOutput.includes('破�
 check('指纹报告标出越界项', lintOutput.includes('✗') && lintOutput.includes('✓'));
 check('指纹报告 null 不抛', T.lintText(null) === '（无结果）');
 
+/* --- 13b. 笔法体检展示：字段名对齐 ndecon/quality/style.py ---------------- */
+
+// 这条判据的措辞是它的一半功能：用户拿单章问「这是不是 AI 写的」时，
+// 界面必须说清「这是节奏分布信号，不是判定」，否则会去改本来没问题的正文。
+const styleSample = {
+  order: 1, version: 'style-v1', cjk_chars: 2445, score: 0.4, passed: false,
+  baseline: { version: 'style-v1', books: 67, chapters: 5829, holdout_books: 20, holdout_chapters: 1640 },
+  findings: [
+    { metric: '段均句数', value: 1.6283, limit: 1.6235, bound: 'p95', direction: 'hi',
+      percentile: 95.1, evidence: '他推开门，屋里没有人。灯还亮着。', detail: '段均句数 1.6283 高于人类 p95 线 1.6235（人类 95.1 分位）' },
+    { metric: '分句均字', value: 6.4497, limit: 7.5508, bound: 'p10', direction: 'lo',
+      percentile: 1.0, evidence: '他，停，一下。', detail: '分句均字 6.4497 低于人类 p10 线 7.5508（人类 1.0 分位）' },
+  ],
+  note: '节奏分布信号，不是「是不是 AI」的判定；不改正文。',
+};
+const styleOutput = T.styleText(styleSample);
+check('笔法报告说清基线出处', styleOutput.includes('67 本 5829 章') && styleOutput.includes('留出 20 本 1640 章'));
+check('笔法报告列越界占比', styleOutput.includes('越界占比：40%'));
+check('笔法报告逐条列指标与实测值', styleOutput.includes('段均句数') && styleOutput.includes('1.6283'));
+check('笔法报告方向说得对', styleOutput.includes('高于人类 p95') && styleOutput.includes('低于人类 p10'));
+check('笔法报告给人类分位', styleOutput.includes('95.1 分位') && styleOutput.includes('1.0 分位'));
+check('笔法报告带原文证据', styleOutput.includes('例：他推开门'));
+check('笔法报告复述 note 不越位判定', styleOutput.includes('不是「是不是 AI」的判定'));
+check('笔法报告 null 不抛', T.styleText(null) === '（无结果）');
+
+// 五项全在人类分布内时，必须给一句正面结论而不是留白——
+// 空白会被读成「没跑成功」。
+check('笔法报告无越界时给结论',
+  T.styleText({ version: 'style-v1', cjk_chars: 2600, score: 0, findings: [] })
+    .includes('全部落在人类分布内'));
+
 /* --- 14. 台账展示只挑本章 ------------------------------------------------ */
 
 const runsSample = { runs: [
