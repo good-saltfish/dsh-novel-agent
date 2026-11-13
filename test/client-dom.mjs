@@ -1666,6 +1666,53 @@ check('预览对「一个部件都没解析出来」也有话说',
   }
 }
 
+/* --- 25. 导出：地址正确、按钮真的渲染、样张能拿出手 ---------------------- */
+
+check('exportUrl 默认给 epub', T.exportUrl('p1').includes('/export?format=epub'), T.exportUrl('p1'));
+check('exportUrl 支持 docx', T.exportUrl('p1', 'docx').includes('/export?format=docx'), T.exportUrl('p1', 'docx'));
+check('exportUrl 对未知格式退回 epub（不能让拼错的值直通引擎）',
+  T.exportUrl('p1', 'pdf').includes('format=epub'), T.exportUrl('p1', 'pdf'));
+check('exportUrl 把中文项目 id 编码，不产生裸字符',
+  !/[一-鿿]/.test(T.exportUrl('creation-连写书-000000')), T.exportUrl('creation-连写书-000000'));
+// token 不能进 URL：那是插件与引擎之间的凭据，拼进地址栏就等于写进浏览器历史与下载记录。
+check('exportUrl 不携带访问令牌', !/token/i.test(T.exportUrl('p1')));
+
+{
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, async text() { return JSON.stringify(projectPayload); } });
+  const homeEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+  mount(homeEl);
+  const tree = await settle(homeEl);
+  check('项目页有「导出 EPUB」按钮', findAll(tree, 'button', '导出 EPUB').length === 1,
+    textOf(tree).slice(0, 800));
+  check('项目页有「导出 Word」按钮', findAll(tree, 'button', '导出 Word').length === 1);
+  check('导出区块标出会导出几章', /导出（\d+ 章）/.test(textOf(tree)), textOf(tree).slice(0, 800));
+  check('导出说明写清「只导出盘上真有正文的章」',
+    textOf(tree).includes('只导出盘上真有正文的章'), textOf(tree).slice(0, 900));
+  // Markdown 视图下也该能导出：写完了拿走，和看哪个视图无关。
+  findAll(tree, 'button', 'Markdown')[0].props.onClick();
+  const mdTree = await settle(homeEl);
+  check('Markdown 视图下导出按钮仍在',
+    findAll(mdTree, 'button', '导出 EPUB').length === 1, textOf(mdTree).slice(0, 800));
+  globalThis.fetch = originalFetch;
+}
+
+{
+  // 一章正文都没有时：按钮必须禁用，而不是让用户点下去拿到 400。
+  const originalFetch = globalThis.fetch;
+  const empty = { ...projectPayload, manuscripts: {}, cursor: 0 };
+  globalThis.fetch = async () => ({ ok: true, status: 200, async text() { return JSON.stringify(empty); } });
+  const homeEl = h(T.ProjectHome, { projectId: 'p1', busy: false, onBack() {}, onOpenChapter() {} });
+  mount(homeEl);
+  const tree = await settle(homeEl);
+  const btn = findAll(tree, 'button', '导出 EPUB')[0];
+  check('一章正文都没有时「导出 EPUB」是禁用的', !!btn && btn.props.disabled === true,
+    JSON.stringify(btn && btn.props && btn.props.disabled));
+  check('禁用状态会说明为什么（不是死按钮）',
+    !!btn && String(btn.props.title || '').includes('还没有已提交的正文'), btn && btn.props.title);
+  globalThis.fetch = originalFetch;
+}
+
 /* --- 24b. 用草稿建项目：骨架走 PUT parts，不重新生成 ---------------------- */
 
 {

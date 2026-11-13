@@ -76,6 +76,25 @@ async function call(origin, method, tail, body) {
   return { status: response.status, body: parsed };
 }
 
+/**
+ * 取原始响应（导出下载用）。
+ *
+ * 导出回的是二进制附件，不能走 `call()`——它 `await response.text()`，
+ * 一个 zip 被当 UTF-8 解一遍再丢回来，验不出「字节是否完整」、也验不到
+ * `content-disposition`。下载这种事只能看原始头与原始字节。
+ */
+async function callRaw(origin, tail) {
+  const response = await fetch(`${origin}/novel-studio/api/${tail}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return {
+    status: response.status,
+    headers: response.headers,
+    contentType: response.headers.get('content-type') || '',
+    disposition: response.headers.get('content-disposition') || '',
+    bytes: buffer,
+  };
+}
+
 const dataRoot = path.join(os.tmpdir(), 'novel-studio-ops-' + Date.now());
 const workspace = path.join(dataRoot, 'ws');
 await fs.mkdir(workspace, { recursive: true });
@@ -213,7 +232,54 @@ if (engineUp) {
         : bad('确认后状态', `status=${confirmed.status} ${JSON.stringify(confirmed.body && confirmed.body.record)}`);
     }
 
-    // 6. 台账：连写的 6 章都该在
+    // 6. 导出下载：整条链路必须真的吐出可用文件
+    //
+    // 「导出」在面板上只是一个按钮，真正的风险全在这条链路上：
+    // ①引擎回的是二进制 + Content-Disposition，代理只要在转发时少带一个头，
+    //   浏览器就不知道文件名（用户拿到 `export.epub`）；
+    // ②少读一个 byte 就是个坏 zip —— 所以这里连 zip 的魔数都验。
+    // 走真引擎 + 真插件 HTTP 门，不是假 fetch：假 fetch 测不出头有没有丢。
+    {
+      for (const [format, magic] of [['epub', '504b0304'], ['docx', '504b0304']]) {
+        const raw = await callRaw(origin, `projects/${projectId}/export?format=${format}`);
+        const head = raw.bytes.subarray(0, 4).toString('hex');
+        raw.status === 200 && raw.bytes.length > 1000 && head === magic
+          ? ok(`导出 ${format}：200 + ${raw.bytes.length} 字节 + ZIP 魔数`)
+          : bad(`导出 ${format} 字节`, `status=${raw.status} bytes=${raw.bytes.length} head=${head}`);
+
+        const typeOk = format === 'docx'
+          ? raw.contentType.includes('wordprocessingml')
+          : raw.contentType.includes('epub');
+        typeOk
+          ? ok(`导出 ${format}：content-type 正确（${raw.contentType}）`)
+          : bad(`导出 ${format} content-type`, raw.contentType);
+
+        // 中文书名必须原样出现在 RFC 5987 的 filename* 里：用 filename=
+        // 会让浏览器按 latin-1 解出一串乱码，用户下下来是个名字坏掉的文件。
+        const hasDisposition = /attachment/.test(raw.disposition);
+        const hasUtf8Name = /filename\*=UTF-8''/.test(raw.disposition);
+        const decoded = hasUtf8Name
+          ? decodeURIComponent(raw.disposition.split("filename*=UTF-8''")[1].replace(/;.*$/, ''))
+          : '';
+        hasDisposition && hasUtf8Name && decoded.startsWith('操作验证书')
+          ? ok(`导出 ${format}：文件名带回中文书名（${decoded}）`)
+          : bad(`导出 ${format} 文件名`, raw.disposition);
+      }
+
+      // 不存在的项目要 404，不能让下载器拿到一个空文件
+      const missing = await call(origin, 'GET', 'projects/creation-不存在-000000/export?format=epub');
+      missing.status === 404
+        ? ok('导出不存在的项目回 404')
+        : bad('导出不存在的项目', `status=${missing.status}`);
+
+      // 格式写错要被引擎拒掉，而不是默默给个 epub
+      const weird = await call(origin, 'GET', `projects/${projectId}/export?format=pdf`);
+      weird.status === 400 && String(weird.body && weird.body.error || '').includes('不支持的导出格式')
+        ? ok('导出未知格式被拒 400 并说明可选格式')
+        : bad('导出未知格式', `status=${weird.status} ${JSON.stringify(weird.body)}`);
+    }
+
+    // 7. 台账：连写的 6 章都该在
     {
       const runs = await call(origin, 'GET', `projects/${projectId}/runs`);
       const chapters = ((runs.body && runs.body.runs) || []).flatMap((group) => group.chapters || []);
@@ -223,7 +289,7 @@ if (engineUp) {
         : bad('台账记录', JSON.stringify([...committedOrders]));
     }
 
-    // 7. 指纹检查（只读）
+    // 8. 指纹检查（只读）
     {
       const lint = await call(origin, 'GET', `projects/${projectId}/chapters/1/lint`);
       lint.status === 200 && lint.body && Array.isArray(lint.body.findings) && typeof lint.body.passed === 'boolean'
@@ -231,7 +297,7 @@ if (engineUp) {
         : bad('指纹检查返回形状', `status=${lint.status} ${JSON.stringify(lint.body && Object.keys(lint.body))}`);
     }
 
-    // 8. 参数边界必须可读，不能 500
+    // 9. 参数边界必须可读，不能 500
     {
       const cases = [
         [{ from: 9, to: 2 }, '区间'],
@@ -251,7 +317,7 @@ if (engineUp) {
     }
   }
 
-  // 9. 删除项目：DELETE 必须真的把目录删掉，且幂等
+  // 10. 删除项目：DELETE 必须真的把目录删掉，且幂等
   //
   // 面板新加了删除按钮（用户要求「每个项目需要添加删除按钮功能」）。这条走真引擎，
   // 因为删除是 rmtree，写错了就是数据永久丢失 —— 不能只靠假 fetch 验组件。
@@ -294,7 +360,7 @@ if (engineUp) {
     }
   }
 
-  // 10. 工作区设置：报项目数，改目录后引擎重启
+  // 11. 工作区设置：报项目数，改目录后引擎重启
   {
     const settings = await call(origin, 'GET', '_settings');
     const value = settings.body && settings.body.value;
@@ -306,7 +372,7 @@ if (engineUp) {
       : bad('_settings 报出项目数', JSON.stringify(value && value.projectCount));
   }
 
-  // 11. 引擎被杀掉后能自愈。
+  // 12. 引擎被杀掉后能自愈。
   //
   // 真实症状（用户报的）：面板显示「生成骨架：无法连接引擎
   // （http://127.0.0.1:62238）：fetch failed」。那个端口号早已失效 —— 引擎是
